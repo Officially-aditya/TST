@@ -15,6 +15,34 @@ CLI, FastAPI wrapper and evaluations do not expect a separate Rust HTTP
 service. Memory decisions distinguish operations such as store, retrieve,
 update and forget from the selected STM/LTM/Tree layer.
 
+## What TST is for
+
+TST is a private, local context layer for small language models. It gives a
+local assistant durable memory, temporary conversation context and structured
+repository context without sending user data to a cloud memory service or
+retraining the model.
+
+Typical uses include:
+
+- A coding assistant remembers durable preferences such as “I use TypeScript.”
+- Session-only facts such as “call the service Atlas” disappear after restart.
+- A repository-aware assistant retrieves symbols, callers, imports and tests
+  before answering a code question.
+- An agent uses explicit store, retrieve, update and forget operations instead
+  of allowing model prose to mutate memory accidentally.
+
+For example:
+
+```text
+Remember that I prefer TypeScript.
+Restart TST.
+Which language should we use for the frontend?
+                 -> TypeScript is retrieved from persistent LTM
+```
+
+TST is not a general-purpose database, vector-search service, hosted memory
+backend, desktop UI or automatic code-fix executor.
+
 ## Install and run
 
 Prerequisites are Python 3.10+ and a current stable Rust toolchain (the crate
