@@ -7,7 +7,7 @@ Covers spec sections:
   6.1  Sustained 500-turn kernel session (latency stability, no memory growth)
 
 Does NOT load ML models — uses the Tier-2 Qwen3.5 router only for 7.1,
-and exercises the Rust kernel STDIO directly for 6.1.
+and exercises the Rust kernel through the shared protocol client for 6.1.
 
 Usage:
   source gemma-env/bin/activate
@@ -16,8 +16,6 @@ Usage:
 
 import argparse
 import json
-import os
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -25,9 +23,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 SEP = "─" * 72
-KERNEL_CWD = "./tst_memory"
-KERNEL_BIN = "./tst_memory/target/release/server"
-VALID_ROUTES = {"route_to_stm", "route_to_ltm", "route_to_tree", "route_to_cloud"}
+VALID_OPERATIONS = {
+    "store", "retrieve", "update", "forget", "search", "analyze_code",
+    "answer_without_memory", "escalate_external",
+}
 
 
 # ─── Metrics helpers ──────────────────────────────────────────────────────────
@@ -65,41 +64,54 @@ def emit(test_id: str, passed: bool, threshold: str, p50: float, p95: float,
 
 class Kernel:
     def __init__(self):
-        self._proc = subprocess.Popen(
-            [KERNEL_BIN], cwd=KERNEL_CWD,
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, text=True, bufsize=1,
-        )
-        ready = self._proc.stdout.readline()
-        assert "READY" in ready, f"Kernel not ready: {ready!r}"
+        from tst.kernel.client import StdioKernelClient
 
-    def _send(self, line: str) -> dict:
-        self._proc.stdin.write(line + "\n")
-        self._proc.stdin.flush()
-        raw = self._proc.stdout.readline()
-        try:
-            return json.loads(raw)
-        except Exception:
-            return {"raw": raw.strip()}
+        self._client = StdioKernelClient()
+        self._client.start()
+        self._layers: dict[str, str] = {}
+        self._tree_nodes: dict[str, int] = {}
 
     def write(self, key: str, layer: str, value: str) -> dict:
         ts = int(time.time() * 1000)
-        body = json.dumps({
-            "op": "insert", "key": key, "layer": layer,
-            "payload": {
-                "header": {"payload_type": 2, "version": 1,
-                           "created_ts": ts, "last_access_ts": ts, "access_count": 1},
-                "data": {"Preference": {"key": "k", "value": value, "weight": 1.0}},
+        normalized = layer.lower()
+        self._layers[key] = normalized
+        if normalized == "tree":
+            self._tree_nodes[key] = self._client.tree_insert("File", key)
+            return {"stored": True}
+        return self._client.store(
+            normalized,
+            key,
+            {
+                "type": "token_stats",
+                "data": {
+                    "key": key,
+                    "value": value,
+                    "memory_type": "stress",
+                    "source_text": value,
+                    "created_at": ts,
+                    "updated_at": ts,
+                    "confidence": 1.0,
+                    "tags": ["stress"],
+                    "source": "evaluation",
+                    "layer": normalized,
+                    "reinforcement_score": 0.0,
+                    "deleted": False,
+                },
             },
-        })
-        return self._send(f"WRITE {body}")
+        )
 
     def read(self, keys: list[str]) -> dict:
-        body = json.dumps({"keys": keys, "max_results": len(keys)})
-        return self._send(f"READ {body}")
+        found = []
+        for key in keys:
+            layer = self._layers[key]
+            if layer == "tree":
+                found.append(self._client.tree_query(self._tree_nodes[key], depth=0))
+            else:
+                found.append(self._client.get(layer, key))
+        return {"results": found}
 
     def stop(self):
-        self._proc.terminate()
+        self._client.close(graceful=True)
 
 
 # ─── 7.1 Adversarial router inputs ───────────────────────────────────────────
@@ -141,26 +153,27 @@ def test_71_adversarial_router():
     for name, inp, threshold in adversarial_cases:
         t0 = time.perf_counter()
         crashed = False
-        route = None
+        decision = None
         try:
             raw, _ = _infer_q3(inp[:2000], inp[:2000])  # cap at 2k chars
-            route  = _parse_q3(raw)
+            decision = _parse_q3(raw, inp[:2000])
         except Exception as ex:
             crashed = True
-            route   = None
+            decision = None
             raw     = str(ex)
 
         elapsed_ms = (time.perf_counter() - t0) * 1000
-        passed = (not crashed) and (route in VALID_ROUTES or route is None)
-        # Injection check: output must be a valid route, not arbitrary text
+        operation = decision.operation if decision is not None else None
+        passed = (not crashed) and (operation in VALID_OPERATIONS or operation is None)
+        # Injection check: output must be a valid structured decision.
         if name == "prompt_injection":
-            passed = passed and route in VALID_ROUTES
+            passed = passed and operation in VALID_OPERATIONS
 
         results.append(emit(
             f"router_adversarial_{name}",
             passed, threshold,
             elapsed_ms, elapsed_ms, elapsed_ms,
-            note=f"route={route} crashed={crashed}",
+            note=f"operation={operation} crashed={crashed}",
         ))
     return results
 
@@ -182,7 +195,7 @@ def test_61_sustained_session():
         return []
 
     n_turns   = 500
-    routes    = ["STM"] * 300 + ["LTM"] * 125 + ["Tree"] * 75  # 60/25/15 split
+    routes    = ["stm"] * 300 + ["ltm"] * 125 + ["tree"] * 75  # 60/25/15 split
     import random
     random.seed(42)
     random.shuffle(routes)

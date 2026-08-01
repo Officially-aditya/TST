@@ -28,37 +28,41 @@ import httpx
 # Config
 # ---------------------------------------------------------------------------
 
-BASE_URL    = "http://127.0.0.1:8003"
+BASE_URL = "http://127.0.0.1:8003"
 OUTPUT_FILE = Path(__file__).parent / "responses.json"
-TIMEOUT     = 120.0  # seconds — model cold-start can be slow
+TIMEOUT = 120.0  # seconds — model cold-start can be slow
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
 log = logging.getLogger("router.client")
 
 # ---------------------------------------------------------------------------
-# Canonical test queries (one per route)
+# Canonical test queries (one per operation class)
 # ---------------------------------------------------------------------------
 
 TEST_CASES: list[dict] = [
     {
-        "label":   "STM — recent context",
-        "query":   "What did we just discuss?",
+        "label": "STM — recent context",
+        "query": "What did we just discuss?",
         "payload": "Recent conversation turn about memory routing.",
+        "expected_tool": "retrieve_memory",
     },
     {
-        "label":   "LTM — persistent preference",
-        "query":   "User always prefers TypeScript over JavaScript.",
+        "label": "LTM — persistent preference",
+        "query": "Remember that I prefer TypeScript over JavaScript.",
         "payload": "TypeScript preference rule — persist across sessions.",
+        "expected_tool": "store_memory",
     },
     {
-        "label":   "Tree — code analysis",
-        "query":   "Fix the syntax error on line 53 of main.rs",
+        "label": "Tree — code analysis",
+        "query": "/analyze test_project",
         "payload": "",
+        "expected_tool": "query_code_graph",
     },
     {
-        "label":   "Cloud — world knowledge",
-        "query":   "What is the capital of France?",
+        "label": "No memory — world knowledge",
+        "query": "What is the capital of France?",
         "payload": "",
+        "expected_tool": "answer_without_memory",
     },
 ]
 
@@ -66,13 +70,14 @@ TEST_CASES: list[dict] = [
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _print_telemetry(t: dict) -> None:
-    log.info("  Tier         : %s", t.get("tier"))
+    log.info("  Source       : %s", t.get("source"))
     log.info("  Model        : %s", t.get("model"))
-    log.info("  Prompt tokens: %d", t.get("prompt_tokens", 0))
-    log.info("  Eval tokens  : %d", t.get("eval_tokens", 0))
     log.info("  Wall time    : %.1f ms", t.get("wall_time_ms", 0))
-    log.info("  Tokens/sec   : %.1f", t.get("tokens_per_sec", 0))
+    log.info("  Kernel time  : %s", t.get("kernel_ms"))
+    log.info("  Parse errors : %d", t.get("parse_failures", 0))
+    log.info("  Tier usage   : %s", t.get("tier_usage", {}))
 
 
 def send_route(client: httpx.Client, query: str, payload: str) -> dict:
@@ -84,9 +89,11 @@ def send_route(client: httpx.Client, query: str, payload: str) -> dict:
     resp.raise_for_status()
     return resp.json()
 
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     # Liveness check
@@ -116,16 +123,19 @@ def main() -> None:
             log.info("  → Escalate    : %s", result.get("result", {}).get("escalate"))
             _print_telemetry(result.get("telemetry", {}))
 
-            stored.append({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "label":     tc["label"],
-                "query":     tc["query"],
-                "payload":   tc["payload"],
-                "tool_called": result.get("tool_called"),
-                "args":      result.get("args"),
-                "result":    result.get("result"),
-                "telemetry": result.get("telemetry"),
-            })
+            stored.append(
+                {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "label": tc["label"],
+                    "query": tc["query"],
+                    "payload": tc["payload"],
+                    "expected_tool": tc["expected_tool"],
+                    "tool_called": result.get("tool_called"),
+                    "args": result.get("args"),
+                    "result": result.get("result"),
+                    "telemetry": result.get("telemetry"),
+                }
+            )
 
     OUTPUT_FILE.write_text(json.dumps(stored, indent=2), encoding="utf-8")
     log.info("")
@@ -133,8 +143,9 @@ def main() -> None:
 
     # Summary
     correct = sum(
-        1 for tc, s in zip(TEST_CASES, stored)
-        if tc["label"].split(" — ")[0].lower() in s.get("tool_called", "")
+        1
+        for tc, s in zip(TEST_CASES, stored, strict=True)
+        if tc["expected_tool"] == s.get("tool_called")
     )
     log.info("Routing accuracy: %d / %d", correct, len(TEST_CASES))
 

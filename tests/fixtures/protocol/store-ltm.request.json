@@ -1,0 +1,17 @@
+{
+  "protocol_version": 1,
+  "request_id": "fixture-store-001",
+  "operation": "memory.store",
+  "params": {
+    "layer": "ltm",
+    "key": "user:default:preference:programming_language",
+    "payload": {
+      "type": "preference",
+      "data": {
+        "key": "programming_language",
+        "value": "TypeScript",
+        "weight": 1.0
+      }
+    }
+  }
+}

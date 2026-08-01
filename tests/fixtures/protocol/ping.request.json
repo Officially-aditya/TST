@@ -1,0 +1,6 @@
+{
+  "protocol_version": 1,
+  "request_id": "fixture-ping-001",
+  "operation": "kernel.ping",
+  "params": {}
+}

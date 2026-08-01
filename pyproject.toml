@@ -1,0 +1,92 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tst-memory"
+version = "0.2.0"
+description = "A local structured-memory kernel and repository intelligence layer for small language models"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{name = "TST contributors"}]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Rust",
+]
+dependencies = [
+  "pydantic>=2.7,<3",
+]
+
+[project.optional-dependencies]
+router = [
+  "fastapi>=0.111,<1",
+  "httpx>=0.27,<1",
+  "uvicorn>=0.29,<1",
+]
+models = [
+  "accelerate>=0.30",
+  "torch>=2.2",
+  "transformers>=4.41",
+]
+analysis = [
+  "tree-sitter>=0.24,<0.26",
+  "tree-sitter-language-pack>=0.7,<1",
+]
+dev = [
+  "mypy>=1.11,<2",
+  "pytest>=8,<9",
+  "pytest-cov>=5,<7",
+  "ruff>=0.6,<1",
+]
+
+[project.scripts]
+tst = "tst.cli:main"
+
+[tool.setuptools]
+py-modules = ["cli"]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tst*", "router*"]
+namespaces = false
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-config --strict-markers"
+markers = [
+  "integration: starts the compiled Rust kernel and exercises process I/O",
+  "protocol_contract: validates versioned protocol request and response fixtures",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = ["stress_testing", "test_project"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]
+
+[tool.mypy]
+python_version = "3.10"
+check_untyped_defs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+no_implicit_optional = true
+pretty = true
+show_error_codes = true
+warn_redundant_casts = true
+warn_unused_ignores = true

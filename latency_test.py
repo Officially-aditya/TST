@@ -1,76 +1,56 @@
-import subprocess
-import json
+"""Protocol-overhead benchmark using the shared v1 STDIO client."""
+
+from __future__ import annotations
+
 import time
-import sys
 
-def test_rust_kernel_latency():
-    print("Building TST Memory Kernel for Profiling...")
-    subprocess.run(["cargo", "build", "--release", "--bin", "server"], cwd="./tst_memory", check=True)
+from tst.kernel.client import StdioKernelClient
+from tst.kernel.process import KernelProcessConfig
 
-    server_cmd = ["cargo", "run", "--release", "--bin", "server"]
-    kernel = subprocess.Popen(
-        server_cmd,
-        cwd="./tst_memory",
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=sys.stderr,
-        text=True,
-        bufsize=1
-    )
 
-    ready = kernel.stdout.readline()
-    if "READY" not in ready:
-        print("Kernel failed to start.")
-        sys.exit(1)
+def _payload(index: int) -> dict:
+    return {
+        "type": "token_stats",
+        "data": {
+            "key": f"benchmark:ltm:item:{index}",
+            "value": f"data_{index}",
+            "memory_type": "benchmark",
+            "source_text": f"data_{index}",
+            "created_at": 0,
+            "updated_at": 0,
+            "confidence": 1.0,
+            "tags": ["benchmark"],
+            "source": "evaluation",
+            "layer": "ltm",
+            "reinforcement_score": 0.0,
+            "deleted": False,
+        },
+    }
 
-    print("\n--- Latency Benchmark ---")
-    
-    # Write Latency (Insert 10,000 items)
-    num_items = 10000
-    start_time = time.time()
-    for i in range(num_items):
-        req = json.dumps({
-            "op": "insert",
-            "key": f"test_key_{i}",
-            "payload": {
-                "header": {
-                    "payload_type": 1,
-                    "version": 1,
-                    "created_ts": 0,
-                    "last_access_ts": 0,
-                    "access_count": 0
-                },
-                "data": {
-                    "TokenStats": {
-                        "canonical_form": f"data_{i}",
-                        "frequency": 1,
-                        "decay_score": 1.0,
-                        "preferred_tokenizer_origin": None
-                    }
-                }
-            }
-        })
-        kernel.stdin.write(f"WRITE {req}\n")
-        kernel.stdin.flush()
-        _ = kernel.stdout.readline()
-        
-    write_time = time.time() - start_time
-    print(f"Write Throughput: {num_items / write_time:.2f} requests/sec")
-    print(f"Avg Write Latency: {(write_time / num_items) * 1000:.3f} ms")
 
-    # Read Latency (Read 10,000 items)
-    start_time = time.time()
-    for i in range(num_items):
-        req = json.dumps({"keys": [f"test_key_{i}"], "max_results": 1})
-        kernel.stdin.write(f"READ {req}\n")
-        kernel.stdin.flush()
-        _ = kernel.stdout.readline()
+def test_rust_kernel_latency(num_items: int = 10_000) -> None:
+    print("Building TST Memory Kernel for Profiling (explicit benchmark build)...")
+    client = StdioKernelClient(KernelProcessConfig(build_kernel=True, request_timeout=10))
+    client.start()
+    try:
+        print("\n--- Latency Benchmark ---")
+        started = time.perf_counter()
+        for index in range(num_items):
+            key = f"benchmark:ltm:item:{index}"
+            client.store("ltm", key, _payload(index))
+        write_seconds = time.perf_counter() - started
+        print(f"Write Throughput: {num_items / write_seconds:.2f} requests/sec")
+        print(f"Avg Write Latency: {(write_seconds / num_items) * 1000:.3f} ms")
 
-    read_time = time.time() - start_time
-    print(f"Read Throughput: {num_items / read_time:.2f} requests/sec")
-    print(f"Avg Read Latency: {(read_time / num_items) * 1000:.3f} ms")
+        started = time.perf_counter()
+        for index in range(num_items):
+            client.get("ltm", f"benchmark:ltm:item:{index}")
+        read_seconds = time.perf_counter() - started
+        print(f"Read Throughput: {num_items / read_seconds:.2f} requests/sec")
+        print(f"Avg Read Latency: {(read_seconds / num_items) * 1000:.3f} ms")
+    finally:
+        client.close(graceful=True)
 
-    kernel.terminate()
 
 if __name__ == "__main__":
     test_rust_kernel_latency()

@@ -1,118 +1,130 @@
 # TST Memory System
 
-A three-tier structured memory kernel for sub-1B language models on edge hardware. Gives frozen SLMs persistent, structured memory without retraining — running entirely on-device.
+TST is a local structured-memory framework for small language models. Its Rust
+kernel provides short-term memory, persistent long-term memory and a code Tree;
+the Python package adds action-aware routing, canonical memory planning,
+retrieval, safe repository indexing and an installed CLI.
 
----
-
-## Architecture
-
-```
-User Input
-    │
-    ▼
-Interpreter
-    │
-    ▼
-Tiered Router
-  Tier 1: FunctionGemma-270M
-  Tier 2: Qwen3.5-0.8B (fallback)
-    │
-    ├── STM  — ring buffer       < 1 ms
-    ├── LTM  — TST trie          < 5 ms
-    └── Tree — DAG               < 20 ms
-    │
-    ▼
-Worker SLM (Qwen3.5-0.8B)
-    │
-    ▼
-Response
+```text
+input -> action router -> memory planner -> shared STDIO client
+      -> Rust kernel -> ranked context -> local worker
 ```
 
-| Component | Language | Role |
-|---|---|---|
-| `tst_memory/` | Rust | Core kernel — STM, LTM, Tree, persistence, logit bias |
-| `router/` | Python | Tiered router — FunctionGemma-270M → Qwen3.5-0.8B |
-| `cli.py` | Python | Full end-to-end pipeline REPL |
+Version 0.2 uses one versioned newline-delimited JSON protocol everywhere. The
+CLI, FastAPI wrapper and evaluations do not expect a separate Rust HTTP
+service. Memory decisions distinguish operations such as store, retrieve,
+update and forget from the selected STM/LTM/Tree layer.
 
-### Memory Tiers
+## Install and run
 
-- **STM** — 256-slot ring buffer. Sub-millisecond read/write. Decays by score; promotes to LTM.
-- **LTM** — Arena-backed Ternary Search Trie. 24-byte nodes, disk-persistent, atomic snapshots.
-- **Tree** — DAG of project structure (File, Function, Class nodes with import edges). Import-graph-scoped subgraph queries.
-
----
-
-## Results
-
-| Metric | Target | Mac M2 (MPS) | Windows x86_64 (CPU) |
-|---|---|---|---|
-| STM write latency | < 1 ms | **0.009 ms** | **0.260 ms** |
-| STM read latency | < 1 ms | **0.007 ms** | **0.158 ms** |
-| LTM read latency | < 5 ms | **0.020 ms** | **0.154 ms** |
-| Router accuracy | — | **4/4 (100%)** | **4/4 (100%)** |
-| Router warm latency | — | ~1,350 ms | ~8,800 ms |
-| Memory budget (200K symbols) | < 23 MB | **< 23 MB** | **< 23 MB** |
-| Rust unit tests | — | 27/27 | 26/26 |
-| Stress tests | — | 36/36 | 34/36 |
-
----
-
-## How to Run
-
-### Prerequisites
-
-- Rust (2021 edition) — [rustup.rs](https://rustup.rs)
-- Python 3.10+ with a virtualenv (project uses `gemma-env/`)
-- Ollama with `qwen3.5:0.8b` pulled (for comparison evals only)
-
-### 1. Build the Rust kernel
+Prerequisites are Python 3.10+ and a current stable Rust toolchain (the crate
+uses Rust edition 2024). On macOS or Linux, from a clean checkout:
 
 ```bash
-cd tst_memory
-cargo build --release
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
+
+tst doctor
+tst kernel build
+tst analyze .
 ```
 
-### 2. Install Python dependencies
+Normal startup uses an existing kernel binary and never builds with Cargo
+implicitly. `tst kernel build` is the explicit developer build command. A
+compatible prebuilt binary can be selected with `TST_KERNEL_BIN`.
+
+Large or native dependencies are optional:
 
 ```bash
-source gemma-env/bin/activate
-pip install -r router/requirements.txt
+python -m pip install -e '.[analysis]'  # Tree-sitter for JS/TS/TSX/Rust
+python -m pip install -e '.[router]'    # FastAPI service
+python -m pip install -e '.[models]'    # Torch/Transformers chat models
+
+tst analyze . --symbol run_route
+tst chat
 ```
 
-### 3. Start the router server
+Python repository analysis uses the standard-library AST even in a core
+install. Other supported languages use a conservative fallback when the
+analysis extra is absent. Scanning is root-bounded, excludes dependencies,
+build output and common secrets, and never executes analyzed code.
+
+See [installation and commands](docs/installation.md) for the complete workflow.
+Wheel installations require a compatible `TST_KERNEL_BIN` unless their
+distributor explicitly bundles a platform binary; source checkouts can use
+`tst kernel build`.
+
+## Test
+
+The lightweight Python CI toolchain is pinned in `requirements-dev.lock`:
 
 ```bash
-source gemma-env/bin/activate
-uvicorn router.server:app --port 8003
+python -m pip install -r requirements-dev.lock
+python -m pip install --no-deps -e .
+python -m pytest -m 'not integration and not protocol_contract'
+python -m pytest -m protocol_contract
+
+cargo test --locked --manifest-path tst_memory/Cargo.toml --all-targets
+python -m pytest -m integration
+python scripts/evaluate_routing.py
+python scripts/evaluate_retrieval.py
+python scripts/baseline.py
 ```
 
-### 4. Run the CLI
+Pull-request CI also runs Rust formatting and Clippy, Python Ruff and mypy,
+protocol fixture checks, and integration tests. Model-weight evaluations are
+manual or scheduled so kernel latency remains separate from inference latency.
+
+## Latest verified benchmark
+
+The v0.2 release candidate was measured on 2026-08-01 on an Apple arm64 host
+running macOS 26.5.2, Python 3.12.4 and Rust 1.93.1. These are local
+release-kernel measurements, not guarantees for every machine.
+
+| Operation | v0.2 target | Measured P95 |
+|---|---:|---:|
+| STM exact read | < 1 ms | 0.036 ms |
+| LTM exact read | < 5 ms | 0.033 ms |
+| Lexical memory search | < 20 ms | 1.044 ms |
+| Tree symbol lookup | < 20 ms | 0.344 ms |
+| Small Tree subgraph | < 50 ms | 0.135 ms |
+| Snapshot save | < 250 ms | 10.732 ms |
+| Protocol overhead | < 2 ms | 0.031 ms |
+| Unchanged-file check | < 2 ms/file | 0.192 ms/file |
+
+The same run measured 8.49 ms kernel startup, 3.42 ms restart and 3.84 MiB
+maximum kernel RSS. All 29 Rust stress checks and every performance gate
+passed. The deterministic routing set scored 100% joint operation/layer
+accuracy across 300 cases with 0.018 ms P95 latency. Retrieval scored 100%
+Recall@1, Recall@3 and MRR across 100 cases with 0.272 ms P95 latency, zero
+wrong-memory results and zero deleted-memory leakage.
+
+Reproduce the measured gates from a release build:
 
 ```bash
-source gemma-env/bin/activate
-python cli.py
+tst kernel build
+python scripts/evaluate_routing.py
+python scripts/evaluate_retrieval.py
+python layer4_benchmarks.py test_project --with-kernel
+python scripts/baseline.py --kernel-bin tst_memory/target/release/server
 ```
 
-The CLI builds and starts the Rust kernel automatically, loads both models, then opens a REPL. Expect ~25–30 seconds on first run.
+See [evaluation and regression checks](docs/evaluation.md) for methodology and
+the distinction between kernel latency and model inference latency.
 
-### Running Evals
+## Documentation
 
-```bash
-# Router accuracy + latency
-python router_eval.py
+- [Architecture](docs/architecture.md)
+- [Protocol](docs/protocol.md)
+- [Memory semantics](docs/memory-semantics.md)
+- [Retrieval](docs/retrieval.md)
+- [Code graph](docs/code-graph.md)
+- [Structured reviews](docs/structured-reviews.md)
+- [Evaluation](docs/evaluation.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Security](SECURITY.md)
+- [v0.1 reproducible baseline](docs/baseline-v0.1.md)
 
-# Cross-file reasoning (TST vs Ollama)
-python test_tree_eval.py
-
-# Multi-file stress test (24 bugs, 10 files, 4 tiers)
-python test_multifile_eval.py
-
-# Kernel stress suite (36 tests)
-cd tst_memory && cargo run --release --bin stress_bench
-```
-
----
-
-## Paper
-
-[TST.pdf](TST.pdf) — full system description, ablation study, and benchmarks.
+The original system paper is available as [TST.pdf](TST.pdf).

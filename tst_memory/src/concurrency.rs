@@ -1,5 +1,5 @@
-use std::sync::{Arc, RwLock};
 use crate::kernel::Kernel;
+use std::sync::{Arc, RwLock};
 
 /// MemoryGuard encapsulates the Kernel inside an RwLock to satisfy Phase 9 Concurrency requirements.
 /// It provides concurrent reads and serialized writes for the edge environment (2-4 cores).
@@ -20,7 +20,7 @@ impl MemoryGuard {
         F: FnOnce(&Kernel) -> R,
     {
         let lock = self.inner.read().expect("RwLock poisoned");
-        f(&*lock)
+        f(&lock)
     }
 
     pub fn write<F, R>(&self, f: F) -> R
@@ -28,7 +28,7 @@ impl MemoryGuard {
         F: FnOnce(&mut Kernel) -> R,
     {
         let mut lock = self.inner.write().expect("RwLock poisoned");
-        f(&mut *lock)
+        f(&mut lock)
     }
 }
 
@@ -41,7 +41,7 @@ mod tests {
     fn test_concurrency_guard() {
         let kernel = Kernel::new();
         let guard = MemoryGuard::new(kernel);
-        
+
         let g1 = guard.clone();
         let t1 = thread::spawn(move || {
             g1.read(|k| {

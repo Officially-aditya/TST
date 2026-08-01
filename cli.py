@@ -9,9 +9,7 @@ Architecture:
   - Qwen3.5-0.8B        (float16, MPS)  — Tier-2 router + Worker SLM
   - Rust tst_memory kernel via subprocess STDIO
 
-STDIO kernel protocol:
-  WRITE {"op":"insert","key":"...","layer":"STM|LTM|Tree","payload":{...}}
-  READ  {"keys":[...],"max_results":N}
+STDIO kernel protocol: versioned newline-delimited JSON envelopes.
 
 Usage:
   source gemma-env/bin/activate
@@ -23,12 +21,10 @@ Note: multi-line input is blocked. Enter one query per line.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
 import select
-import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -36,17 +32,34 @@ from pathlib import Path
 from typing import Optional
 
 import torch
-from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer
+from transformers import (
+    AutoModelForCausalLM,
+    AutoModelForImageTextToText,
+    AutoProcessor,
+    AutoTokenizer,
+)
 
-from router.tools import FG_TOOL_SCHEMAS, TOOL_SCHEMAS, VALID_ROUTES
+from router.tools import ActionHandlers
+from tst.kernel.client import StdioKernelClient
+from tst.kernel.process import KernelProcessConfig
+from tst.routing.decision import RouteDecision
+from tst.routing.deterministic import deterministic_route
+from tst.routing.parser import (
+    RouteParseError,
+    parse_functiongemma_output,
+    parse_json_tool_output,
+)
+from tst.routing.schemas import FG_TOOL_SCHEMAS, TOOL_SCHEMAS
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 
-FG_MODEL_ID   = "google/functiongemma-270m-it"
-Q3_MODEL_ID   = "Qwen/Qwen3.5-0.8B"
-KERNEL_CWD    = "./tst_memory"
-KERNEL_BIN    = "./target/release/server"
-ROUTE_TOKENS  = ["route_to_stm", "route_to_ltm", "route_to_tree", "route_to_cloud"]
+FG_MODEL_ID = os.environ.get("TST_ROUTER_TIER1_MODEL", "google/functiongemma-270m-it")
+Q3_MODEL_ID = os.environ.get("TST_ROUTER_TIER2_MODEL", "Qwen/Qwen3.5-0.8B")
+ROUTE_TOKENS  = [
+    "store:stm", "store:ltm", "retrieve:stm", "retrieve:ltm",
+    "update:ltm", "forget:ltm", "analyze_code:tree",
+    "answer_without_memory:none", "escalate_external:none",
+]
 
 # FunctionGemma activation phrase (exact — must not change)
 _FG_DEVELOPER_MSG = "You are a model that can do function calling with the following functions"
@@ -135,137 +148,7 @@ class SessionStats:
 
 _STATS = SessionStats()
 
-# ─── Kernel subprocess ────────────────────────────────────────────────────────
-
-class KernelProcess:
-    """Manages the Rust tst_memory kernel as a subprocess via STDIO."""
-
-    def __init__(self, cwd: str = KERNEL_CWD):
-        self._cwd  = cwd
-        self._proc: Optional[subprocess.Popen] = None
-
-    def start(self) -> bool:
-        print("  [Kernel] Building tst_memory release binary...")
-        build = subprocess.run(
-            ["cargo", "build", "--release", "--bin", "server"],
-            cwd=self._cwd, capture_output=True, text=True,
-        )
-        if build.returncode != 0:
-            print(f"  [Kernel] Build FAILED:\n{build.stderr[-800:]}")
-            return False
-
-        print("  [Kernel] Starting kernel subprocess...")
-        self._proc = subprocess.Popen(
-            [KERNEL_BIN],
-            cwd=self._cwd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
-        )
-        ready = self._proc.stdout.readline()
-        if "READY" not in ready:
-            print(f"  [Kernel] Did not receive READY: {ready!r}")
-            return False
-        print("  [Kernel] Ready.")
-        return True
-
-    def write(self, key: str, layer: str, payload_type: int, data: dict) -> dict:
-        if self._proc is None:
-            return {"error": "kernel not running"}
-        ts = int(time.time() * 1000)
-        body = {
-            "op":  "insert",
-            "key": key,
-            "layer": layer,
-            "payload": {
-                "header": {
-                    "payload_type": payload_type,
-                    "version":      1,
-                    "created_ts":   ts,
-                    "last_access_ts": ts,
-                    "access_count": 1,
-                },
-                "data": data,
-            },
-        }
-        self._proc.stdin.write(f"WRITE {json.dumps(body)}\n")
-        self._proc.stdin.flush()
-        raw = self._proc.stdout.readline()
-        try:
-            return json.loads(raw)
-        except Exception:
-            return {"raw": raw.strip()}
-
-    def read(self, keys: list[str]) -> dict:
-        if self._proc is None:
-            return {"slices": [None] * len(keys)}
-        body = {"keys": keys, "max_results": len(keys)}
-        self._proc.stdin.write(f"READ {json.dumps(body)}\n")
-        self._proc.stdin.flush()
-        raw = self._proc.stdout.readline()
-        try:
-            return json.loads(raw)
-        except Exception:
-            return {"slices": [None] * len(keys)}
-
-    def tree_insert(self, node_type: str, name: str, parent_id: Optional[int] = None) -> int:
-        if self._proc is None:
-            return 0
-        body = {"node_type": node_type, "name": name, "parent_id": parent_id}
-        self._proc.stdin.write(f"TREE_INSERT {json.dumps(body)}\n")
-        self._proc.stdin.flush()
-        raw = self._proc.stdout.readline()
-        try:
-            return json.loads(raw).get("node_id", 0)
-        except Exception:
-            return 0
-
-    def tree_query(self, node_id: int, depth: int = 3) -> list:
-        if self._proc is None:
-            return []
-        body = {"node_id": node_id, "depth": depth}
-        self._proc.stdin.write(f"TREE_QUERY {json.dumps(body)}\n")
-        self._proc.stdin.flush()
-        raw = self._proc.stdout.readline()
-        try:
-            return json.loads(raw).get("nodes", [])
-        except Exception:
-            return []
-
-    def tree_link(self, source_id: int, target_id: int, add: bool = True) -> dict:
-        if self._proc is None:
-            return {}
-        body = {"source_id": source_id, "target_id": target_id, "add": add}
-        self._proc.stdin.write(f"TREE_LINK {json.dumps(body)}\n")
-        self._proc.stdin.flush()
-        raw = self._proc.stdout.readline()
-        try:
-            return json.loads(raw)
-        except Exception:
-            return {}
-
-    def tree_clear(self) -> dict:
-        if self._proc is None:
-            return {}
-        self._proc.stdin.write("TREE_CLEAR\n")
-        self._proc.stdin.flush()
-        raw = self._proc.stdout.readline()
-        try:
-            return json.loads(raw)
-        except Exception:
-            return {}
-
-    def stop(self):
-        if self._proc:
-            self._proc.terminate()
-            self._proc = None
-
 # ─── Helpers ──────────────────────────────────────────────────────────────────
-
-def _key_from(text: str) -> str:
-    return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 def _get_device() -> str:
     return "mps" if torch.backends.mps.is_available() else "cpu"
@@ -351,8 +234,9 @@ def load_models():
     _sep("Loading Qwen3.5-0.8B  (float16 — Tier-2 Router + Worker SLM)")
     t0 = time.perf_counter()
     _M.q3_tok = AutoTokenizer.from_pretrained(Q3_MODEL_ID)
-    _M.q3_mdl = AutoModelForCausalLM.from_pretrained(
-        Q3_MODEL_ID, dtype=torch.float16
+    qwen_dtype = torch.float16 if _M.device != "cpu" else torch.float32
+    _M.q3_mdl = AutoModelForImageTextToText.from_pretrained(
+        Q3_MODEL_ID, dtype=qwen_dtype
     ).to(_M.device)
     _M.q3_mdl.eval()
     print(f"  Loaded in {(time.perf_counter()-t0)*1000:.0f} ms")
@@ -436,14 +320,12 @@ def _build_fg_prompt(query: str, payload: str):
         tokenize=True, return_tensors="pt", return_dict=True,
     )
 
-def _parse_fg(raw: str) -> Optional[str]:
-    m = re.search(r'call:(\w+)\{', raw)
-    if m and m.group(1) in VALID_ROUTES:
-        return m.group(1)
-    for r in ROUTE_TOKENS:
-        if r in raw:
-            return r
-    return None
+def _parse_fg(raw: str, query: str = "") -> Optional[RouteDecision]:
+    """Compatibility wrapper around the strict FunctionGemma parser."""
+    try:
+        return parse_functiongemma_output(raw, query=query)
+    except RouteParseError:
+        return None
 
 def _infer_fg(query: str, payload: str) -> tuple[str, float]:
     enc   = _build_fg_prompt(query, payload)
@@ -478,28 +360,12 @@ def _build_q3_prompt(query: str, payload: str):
         tokenize=True, return_tensors="pt", return_dict=True,
     )
 
-def _parse_q3(raw: str) -> Optional[str]:
-    raw = raw.strip()
+def _parse_q3(raw: str, query: str = "") -> Optional[RouteDecision]:
+    """Compatibility wrapper around the strict JSON parser."""
     try:
-        obj = json.loads(raw)
-        calls = obj.get("tool_calls", [])
-        if calls and calls[0].get("name") in VALID_ROUTES:
-            return calls[0]["name"]
-    except Exception:
-        pass
-    m = re.search(r'\{[\s\S]*?"tool_calls"[\s\S]*?\}', raw)
-    if m:
-        try:
-            obj   = json.loads(m.group())
-            calls = obj.get("tool_calls", [])
-            if calls and calls[0].get("name") in VALID_ROUTES:
-                return calls[0]["name"]
-        except Exception:
-            pass
-    for r in ROUTE_TOKENS:
-        if r in raw:
-            return r
-    return None
+        return parse_json_tool_output(raw, query=query)
+    except RouteParseError:
+        return None
 
 def _infer_q3(query: str, payload: str) -> tuple[str, float]:
     enc = _build_q3_prompt(query, payload)
@@ -518,22 +384,31 @@ def _infer_q3(query: str, payload: str) -> tuple[str, float]:
 
 # ─── Tiered Router ────────────────────────────────────────────────────────────
 
-def route_query(query: str, payload: str) -> tuple[str, float, str]:
-    """Returns (route_name, total_ms, tier_label)."""
+def route_query(query: str, payload: str) -> tuple[RouteDecision, float, str]:
+    """Returns an operation-aware decision, latency, and tier label."""
+    direct = deterministic_route(query, payload or None)
+    if direct is not None:
+        return direct, 0.0, "deterministic"
+
     raw_fg, ms_fg = _infer_fg(query, payload)
-    route = _parse_fg(raw_fg)
-    if route:
+    decision = _parse_fg(raw_fg, query)
+    if decision:
         _STATS.tier1_hits += 1
-        return route, ms_fg, "FunctionGemma-270M"
+        return decision, ms_fg, "FunctionGemma-270M"
 
     raw_q3, ms_q3 = _infer_q3(query, payload)
-    route = _parse_q3(raw_q3)
-    if route:
+    decision = _parse_q3(raw_q3, query)
+    if decision:
         _STATS.tier2_hits += 1
-        return route, ms_fg + ms_q3, "Qwen3.5-0.8B (fallback)"
+        return decision, ms_fg + ms_q3, "Qwen3.5-0.8B (fallback)"
 
     _STATS.default_hits += 1
-    return "route_to_cloud", ms_fg + ms_q3, "default-fallback"
+    return RouteDecision(
+        operation="answer_without_memory",
+        layer="none",
+        confidence=0.0,
+        source="fallback",
+    ), ms_fg + ms_q3, "default-fallback"
 
 # ─── Interpreter ──────────────────────────────────────────────────────────────
 
@@ -570,96 +445,14 @@ def interpret(user_input: str) -> tuple[str, str, str]:
 
 # ─── Kernel Memory Operations ─────────────────────────────────────────────────
 
-def _extract_context(resp: dict) -> str:
-    """Pull readable text from a kernel READ response."""
-    parts = []
-    for s in resp.get("slices", []):
-        if s is None:
-            continue
-        data = s.get("data", {})
-        if "TokenStats" in data:
-            cf = data["TokenStats"].get("canonical_form", "")
-            if cf:
-                parts.append(cf)
-        elif "Preference" in data:
-            p = data["Preference"]
-            parts.append(f"{p.get('key','pref')}: {p.get('value','')}")
-    return " | ".join(parts)
-
 def kernel_op(
-    kernel: KernelProcess,
-    route: str,
+    kernel: StdioKernelClient,
+    decision: RouteDecision,
     query: str,
-    payload: str,
-    file_path: str,
 ) -> str:
-    """Execute the memory op for the chosen route. Returns context string."""
-    key = _key_from(query)
-
-    if route == "route_to_stm":
-        kernel.write(key, "STM", 1, {
-            "TokenStats": {
-                "canonical_form": payload,
-                "frequency":      1,
-                "decay_score":    1.0,
-                "preferred_tokenizer_origin": "cli",
-            }
-        })
-        return _extract_context(kernel.read([key]))
-
-    elif route == "route_to_ltm":
-        # Use Preference schema for explicit preference statements
-        pref_m = re.search(
-            r'(?:prefer|always use|should use)\s+(\w[\w\s.+-]*?)(?:\s+over|\s+instead|\s*$)',
-            query, re.IGNORECASE,
-        )
-        if pref_m:
-            data = {
-                "Preference": {
-                    "key":   "user_preference",
-                    "value": payload,
-                    "weight": 1.0,
-                }
-            }
-        else:
-            data = {
-                "TokenStats": {
-                    "canonical_form": payload,
-                    "frequency":      1,
-                    "decay_score":    1.0,
-                    "preferred_tokenizer_origin": "cli",
-                }
-            }
-        kernel.write(key, "LTM", 1, data)
-        return _extract_context(kernel.read([key]))
-
-    elif route == "route_to_tree":
-        # If the tree has been populated (via /analyze), return subgraph context.
-        # Node IDs start at 1 after every tree_clear(), so root is always 1.
-        tree_nodes = kernel.tree_query(1, 3)
-        if tree_nodes:
-            parts = []
-            for node in tree_nodes[:16]:
-                ntype = node.get("node_type", "")
-                name  = node.get("name", "")
-                parts.append(f"{ntype}:{name}")
-            return "Tree: " + ", ".join(parts)
-        # Fallback: write a note to the Tree layer
-        fp = file_path or _key_from(query)
-        kernel.write(key, "Tree", 1, {
-            "TokenStats": {
-                "canonical_form": f"file:{fp} | {payload}",
-                "frequency":      1,
-                "decay_score":    1.0,
-                "preferred_tokenizer_origin": "cli",
-            }
-        })
-        return _extract_context(kernel.read([key]))
-
-    elif route == "route_to_cloud":
-        return ""   # No local kernel interaction
-
-    return ""
+    """Execute the planned operation and return context for retrieval only."""
+    result = ActionHandlers(kernel).dispatch(decision, query)
+    return " | ".join(result.get("context", []))
 
 # ─── Worker SLM ───────────────────────────────────────────────────────────────
 
@@ -679,16 +472,16 @@ def _has_code(text: str) -> bool:
     ))
 
 
-def worker_respond(user_input: str, route: str, context: str) -> str:
+def worker_respond(user_input: str, decision: RouteDecision, context: str) -> str:
     """Generate a response with Qwen3.5-0.8B, injecting memory context."""
-    if route == "route_to_tree" and _has_code(user_input):
+    if decision.operation == "analyze_code" and _has_code(user_input):
         if context:
             system = _WORKER_CODE_SYSTEM + f"\n\nProject structure:\n{context}"
         else:
             system = _WORKER_CODE_SYSTEM
-    elif route == "route_to_tree":
+    elif decision.operation == "analyze_code":
         system = _WORKER_SYSTEM   # routed to Tree but no code present — skip review prompt
-    elif route == "route_to_cloud":
+    elif decision.layer == "none":
         system = (
             _WORKER_SYSTEM
             + "\n(No local memory for this query — answering from general knowledge.)"
@@ -722,7 +515,7 @@ def worker_respond(user_input: str, route: str, context: str) -> str:
 
 # ─── Multi-file Tree analysis ────────────────────────────────────────────────
 
-def _analyze_path(path: str, kernel: Optional[KernelProcess], generate: bool) -> None:
+def _analyze_path(path: str, kernel: Optional[StdioKernelClient], generate: bool) -> None:
     """
     Analyze a file or directory for bugs.
     Builds the Tree DAG in the Rust kernel, then runs the Worker SLM on each file.
@@ -838,7 +631,17 @@ def _analyze_path(path: str, kernel: Optional[KernelProcess], generate: bool) ->
 
         user_msg = f"Find all bugs and errors in this code:\n\n{code}"
         t0 = time.perf_counter()
-        response = worker_respond(user_msg, "route_to_tree", context)
+        response = worker_respond(
+            user_msg,
+            RouteDecision(
+                operation="analyze_code",
+                layer="tree",
+                file_path=rel,
+                confidence=1.0,
+                source="deterministic",
+            ),
+            context,
+        )
         ms = (time.perf_counter() - t0) * 1000
 
         print(f"  [{ms:.0f} ms]\n")
@@ -851,7 +654,7 @@ def _analyze_path(path: str, kernel: Optional[KernelProcess], generate: bool) ->
 
 def run_pipeline(
     user_input: str,
-    kernel: Optional[KernelProcess],
+    kernel: Optional[StdioKernelClient],
     generate_response: bool = True,
 ) -> dict:
     """
@@ -865,27 +668,31 @@ def run_pipeline(
     query, payload, file_path = interpret(user_input)
 
     # 2. Route (tiered: FG → Qwen → default)
-    route, route_ms, tier = route_query(query, payload)
+    decision, route_ms, tier = route_query(query, payload)
     _STATS.total_queries += 1
-    _STATS.route_counts[route] = _STATS.route_counts.get(route, 0) + 1
+    route_key = f"{decision.operation}:{decision.layer}"
+    _STATS.route_counts[route_key] = _STATS.route_counts.get(route_key, 0) + 1
     _STATS.total_route_ms     += route_ms
 
     # 3. Kernel memory op
     context = ""
     if kernel:
-        context = kernel_op(kernel, route, query, payload, file_path)
+        context = kernel_op(kernel, decision, query)
 
     # 4. Worker SLM response
     response  = ""
     worker_ms = 0.0
     if generate_response:
         t_w      = time.perf_counter()
-        response = worker_respond(user_input, route, context)
+        response = worker_respond(user_input, decision, context)
         worker_ms = (time.perf_counter() - t_w) * 1000.0
 
     total_ms = (time.perf_counter() - t_start) * 1000.0
     return {
-        "route":     route,
+        "route":     f"{decision.operation}:{decision.layer}",
+        "operation": decision.operation,
+        "layer":     decision.layer,
+        "decision":  decision.model_dump(),
         "tier":      tier,
         "context":   context,
         "response":  response,
@@ -911,8 +718,7 @@ def print_status():
     print("  Route distribution  :")
     for route, count in _STATS.route_counts.items():
         bar = "█" * count
-        short = route.replace("route_to_", "")
-        print(f"    {short:<8} {count:>3}  {bar}")
+        print(f"    {route:<28} {count:>3}  {bar}")
 
 # ─── Input reader (single-line or multi-line block) ───────────────────────────
 
@@ -944,7 +750,7 @@ def read_input() -> str:
 # ─── REPL ─────────────────────────────────────────────────────────────────────
 
 def _display_result(result: dict, generate: bool):
-    route_short = result["route"].replace("route_to_", "").upper()
+    route_short = f"{result['operation'].upper()} / {result['layer'].upper()}"
     print(
         f"\n  [{route_short} | {result['tier']} | "
         f"router {result['route_ms']:.0f} ms]"
@@ -953,13 +759,13 @@ def _display_result(result: dict, generate: bool):
         print(f"  [Memory] {result['context'][:120]}")
     if result["response"]:
         print(f"\n  {result['response']}\n")
-    elif generate and result["route"] == "route_to_cloud":
-        print("  [Cloud] This query needs an external LLM — no local memory available.\n")
+    elif generate and result["layer"] == "none":
+        print("  [Local] Answered without retrieved memory.\n")
     elif generate:
         print("  [Worker] No response generated.\n")
 
 
-def repl(kernel: Optional[KernelProcess]):
+def repl(kernel: Optional[StdioKernelClient]):
     generate = True
     print(BANNER)
 
@@ -1045,17 +851,25 @@ def main():
         "--no-worker", action="store_true",
         help="Skip Worker SLM generation (route-only mode, much faster)",
     )
+    parser.add_argument(
+        "--build-kernel", action="store_true",
+        help="Developer option: build the Rust release kernel before startup",
+    )
     args = parser.parse_args()
 
     _sep("TST Memory System CLI v3.1 — Startup")
 
     # 1. Start Rust kernel
-    kernel: Optional[KernelProcess] = None
+    kernel: Optional[StdioKernelClient] = None
     if not args.no_kernel:
-        kernel = KernelProcess(cwd=KERNEL_CWD)
-        ok = kernel.start()
-        if not ok:
-            print("  [WARNING] Kernel failed — running without memory persistence.")
+        kernel = StdioKernelClient(
+            KernelProcessConfig(build_kernel=args.build_kernel)
+        )
+        try:
+            kernel.start()
+            print("  [Kernel] Ready.")
+        except Exception as exc:
+            print(f"  [WARNING] Kernel failed — running without memory: {exc}")
             kernel = None
     else:
         print("  [INFO] --no-kernel flag set: skipping Rust kernel.")
@@ -1069,7 +883,7 @@ def main():
         repl(kernel)
     finally:
         if kernel:
-            kernel.stop()
+            kernel.close(graceful=True)
             print("  [Kernel] Stopped.")
 
 if __name__ == "__main__":

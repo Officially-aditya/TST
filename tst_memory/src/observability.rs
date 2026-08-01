@@ -17,6 +17,12 @@ pub struct Metrics {
     pub escalations: AtomicU64,
 }
 
+impl Default for Metrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Metrics {
     pub fn new() -> Self {
         Self {
@@ -52,7 +58,7 @@ mod tests {
         let metrics = Metrics::new();
         metrics.record_latency(10);
         metrics.record_latency(20);
-        
+
         assert_eq!(metrics.avg_latency_ms(), 15.0);
         assert_eq!(metrics.request_count.load(Ordering::Relaxed), 2);
     }

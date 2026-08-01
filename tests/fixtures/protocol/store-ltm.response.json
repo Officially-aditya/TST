@@ -1,0 +1,15 @@
+{
+  "protocol_version": 1,
+  "request_id": "fixture-store-001",
+  "ok": true,
+  "result": {
+    "stored": true,
+    "layer": "ltm",
+    "key": "user:default:preference:programming_language",
+    "promoted": false
+  },
+  "error": null,
+  "metrics": {
+    "kernel_ms": 0.0
+  }
+}

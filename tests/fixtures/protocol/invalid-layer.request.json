@@ -1,0 +1,9 @@
+{
+  "protocol_version": 1,
+  "request_id": "fixture-invalid-layer-001",
+  "operation": "memory.get",
+  "params": {
+    "layer": "archive",
+    "key": "user:default:preference:editor"
+  }
+}

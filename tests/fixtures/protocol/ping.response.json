@@ -1,0 +1,12 @@
+{
+  "protocol_version": 1,
+  "request_id": "fixture-ping-001",
+  "ok": true,
+  "result": {
+    "pong": true
+  },
+  "error": null,
+  "metrics": {
+    "kernel_ms": 0.0
+  }
+}

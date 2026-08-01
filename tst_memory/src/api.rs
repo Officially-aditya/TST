@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
-use crate::kernel::{Kernel, WriteProposal, MemoryLayer};
+use crate::kernel::{Kernel, MemoryLayer, WriteProposal};
 use crate::payload::Payload;
 use crate::tree::{NodeType, TreeEvent};
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ReadRequest {
@@ -44,13 +44,13 @@ pub struct TreeLinkRequest {
 
 fn parse_node_type(s: &str) -> Result<NodeType, String> {
     match s {
-        "Project"   => Ok(NodeType::Project),
+        "Project" => Ok(NodeType::Project),
         "Directory" => Ok(NodeType::Directory),
-        "File"      => Ok(NodeType::File),
-        "Class"     => Ok(NodeType::Class),
-        "Function"  => Ok(NodeType::Function),
-        "Symbol"    => Ok(NodeType::Symbol),
-        "Module"    => Ok(NodeType::Module),
+        "File" => Ok(NodeType::File),
+        "Class" => Ok(NodeType::Class),
+        "Function" => Ok(NodeType::Function),
+        "Symbol" => Ok(NodeType::Symbol),
+        "Module" => Ok(NodeType::Module),
         other => Err(format!("Unknown node type: {}", other)),
     }
 }
@@ -70,19 +70,19 @@ impl<'a> ApiServer<'a> {
 
         let mut slices = Vec::new();
         for key in &req.keys {
-            // First check if STM has the payload natively using Hash cache
-            let key_hash = Kernel::hash_key(key.as_bytes());
-            if let Some(entry) = self.kernel.stm.lookup_mut(key_hash) {
-                // Return payload from the Arena natively via entry.payload_ref
-                if let Some(p) = self.kernel.ltm.payloads.get(entry.payload_ref) {
-                    slices.push(Some(p.clone()));
-                } else {
-                    slices.push(None); // Should never happen unless arena is corrupted
-                }
-            } else {
-                let res = self.kernel.route_read(key.as_bytes());
-                slices.push(res);
+            let stm_result = self
+                .kernel
+                .read_memory(MemoryLayer::STM, key.as_bytes())
+                .map_err(|error| error.to_string())?;
+            if stm_result.is_some() {
+                slices.push(stm_result);
+                continue;
             }
+            let ltm_result = self
+                .kernel
+                .read_memory(MemoryLayer::LTM, key.as_bytes())
+                .map_err(|error| error.to_string())?;
+            slices.push(ltm_result);
         }
 
         let resp = ReadResponse { slices };
@@ -132,11 +132,13 @@ impl<'a> ApiServer<'a> {
     pub fn handle_tree_link(&mut self, req_json: &str) -> Result<String, String> {
         let req: TreeLinkRequest = serde_json::from_str(req_json)
             .map_err(|e| format!("Invalid TreeLinkRequest JSON: {}", e))?;
-        self.kernel.tree.process_event(TreeEvent::DependencyChanged {
-            source_id: req.source_id,
-            target_id: req.target_id,
-            added: req.add,
-        });
+        self.kernel
+            .tree
+            .process_event(TreeEvent::DependencyChanged {
+                source_id: req.source_id,
+                target_id: req.target_id,
+                added: req.add,
+            });
         Ok(r#"{"status":"ok"}"#.to_string())
     }
 

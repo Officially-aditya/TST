@@ -1,0 +1,19 @@
+[
+  {"protocol_version": 1, "request_id": "catalog-01", "operation": "kernel.ping", "params": {}},
+  {"protocol_version": 1, "request_id": "catalog-02", "operation": "kernel.status", "params": {}},
+  {"protocol_version": 1, "request_id": "catalog-03", "operation": "kernel.shutdown", "params": {}},
+  {"protocol_version": 1, "request_id": "catalog-04", "operation": "memory.store", "params": {"layer": "ltm", "key": "user:default:preference:editor", "payload": {"type": "preference", "data": {"key": "editor", "value": "Vim", "weight": 1.0}}}},
+  {"protocol_version": 1, "request_id": "catalog-05", "operation": "memory.get", "params": {"layer": "ltm", "key": "user:default:preference:editor"}},
+  {"protocol_version": 1, "request_id": "catalog-06", "operation": "memory.update", "params": {"layer": "ltm", "key": "user:default:preference:editor", "payload": {"type": "preference", "data": {"key": "editor", "value": "Neovim", "weight": 1.0}}}},
+  {"protocol_version": 1, "request_id": "catalog-07", "operation": "memory.delete", "params": {"layer": "ltm", "key": "user:default:preference:editor"}},
+  {"protocol_version": 1, "request_id": "catalog-08", "operation": "memory.search", "params": {"layer": "ltm", "query": "editor", "limit": 5}},
+  {"protocol_version": 1, "request_id": "catalog-09", "operation": "tree.clear", "params": {}},
+  {"protocol_version": 1, "request_id": "catalog-10", "operation": "tree.insert", "params": {"node_type": "Function", "name": "run", "file_path": "src/app.py", "start_line": 1, "end_line": 2}},
+  {"protocol_version": 1, "request_id": "catalog-11", "operation": "tree.remove", "params": {"node_id": 1}},
+  {"protocol_version": 1, "request_id": "catalog-12", "operation": "tree.link", "params": {"source_id": 1, "target_id": 2, "edge_type": "calls", "confidence": 1.0}},
+  {"protocol_version": 1, "request_id": "catalog-13", "operation": "tree.unlink", "params": {"source_id": 1, "target_id": 2, "edge_type": "calls"}},
+  {"protocol_version": 1, "request_id": "catalog-14", "operation": "tree.query", "params": {"node_id": 1, "depth": 1, "max_nodes": 40, "token_budget": 2000}},
+  {"protocol_version": 1, "request_id": "catalog-15", "operation": "tree.find", "params": {"name": "run", "limit": 10}},
+  {"protocol_version": 1, "request_id": "catalog-16", "operation": "persistence.save", "params": {}},
+  {"protocol_version": 1, "request_id": "catalog-17", "operation": "persistence.status", "params": {}}
+]

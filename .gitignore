@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+.python-deps/
+*.egg-info/
+/build/
+
+# Rust
+target/
+tst_memory/target/
+
+# Local models, runtime state, and generated reports
+gemma-env/
+.tst/
+*.snapshot
+*.snapshot.previous
+*.snapshot.tmp
+*.snapshot.tmp.*
+*.snapshot.corrupt.*
+router/responses.json
+baseline-results.json
+routing-results.json
+retrieval-results.json
+layer4-results.json
+
+# Editors / operating systems
+.DS_Store
+.idea/
+.vscode/

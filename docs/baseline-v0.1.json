@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-27T00:00:00+05:30",
+  "git_revision": "8f4cc1c",
+  "environment": {
+    "rustc": "1.93.1",
+    "cargo": "1.93.1",
+    "python": "3.14.6",
+    "platform": "macOS"
+  },
+  "tests": {
+    "rust_library": {"passed": 22, "failed": 0},
+    "rust_integration": {"passed": 2, "failed": 0},
+    "rust_layer1": {"passed": 2, "failed": 0},
+    "python": {"status": "not_configured"}
+  },
+  "transport": {
+    "cli": "legacy_stdio_line_prefix",
+    "router": "unimplemented_http_kernel",
+    "request_ids": false,
+    "structured_errors": false
+  },
+  "persistence": {
+    "helpers_tested": true,
+    "server_wired": false
+  }
+}

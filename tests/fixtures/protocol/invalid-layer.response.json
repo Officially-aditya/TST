@@ -1,0 +1,14 @@
+{
+  "protocol_version": 1,
+  "request_id": "fixture-invalid-layer-001",
+  "ok": false,
+  "result": null,
+  "error": {
+    "code": "invalid_params",
+    "message": "invalid memory layer: archive",
+    "details": null
+  },
+  "metrics": {
+    "kernel_ms": 0.0
+  }
+}

@@ -5,7 +5,7 @@ Standalone accuracy + latency evaluation for the TST Memory Router.
 
 Loads models directly (no HTTP server needed) and runs 4 canonical test
 queries through the same tiered inference pipeline used in router/server.py.
-Also runs the old Layer 2 approach (Qwen-only, regex) for direct comparison.
+Also runs a Qwen-only action-router baseline for direct comparison.
 
 Run:
   source gemma-env/bin/activate
@@ -15,10 +15,7 @@ Run:
 from __future__ import annotations
 
 import json
-import re
 import time
-import sys
-from dataclasses import dataclass, field
 
 import torch
 from transformers import (
@@ -29,21 +26,25 @@ from transformers import (
     LogitsProcessorList,
 )
 
-from router.tools import TOOL_SCHEMAS, FG_TOOL_SCHEMAS, VALID_ROUTES
+from router.tools import TOOL_SCHEMAS, FG_TOOL_SCHEMAS
+from tst.routing.decision import RouteDecision
+from tst.routing.parser import (
+    RouteParseError,
+    parse_functiongemma_output,
+    parse_json_tool_output,
+)
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
 FG_MODEL_ID = "google/functiongemma-270m-it"
 Q3_MODEL_ID = "Qwen/Qwen3.5-0.8B"
 
-ROUTE_TOKENS = ["route_to_stm", "route_to_ltm", "route_to_tree", "route_to_cloud"]
-
-# 4 canonical test queries — one per expected route
+# Canonical operation-layer cases.
 TEST_CASES = [
-    {"query": "What did we just discuss?",                    "payload": "Recent chat about memory routing.", "expected": "route_to_stm"},
-    {"query": "User always prefers TypeScript over JavaScript","payload": "TypeScript preference rule.",        "expected": "route_to_ltm"},
-    {"query": "Fix the syntax error on line 53 of main.rs",  "payload": "",                                  "expected": "route_to_tree"},
-    {"query": "What is the capital of France?",              "payload": "",                                  "expected": "route_to_cloud"},
+    {"query": "What did we just discuss?", "payload": "", "expected_operation": "retrieve", "expected_layer": "stm"},
+    {"query": "Remember that I prefer TypeScript over JavaScript", "payload": "I prefer TypeScript over JavaScript", "expected_operation": "store", "expected_layer": "ltm"},
+    {"query": "Analyze the syntax error in main.rs", "payload": "", "expected_operation": "analyze_code", "expected_layer": "tree"},
+    {"query": "What is the capital of France?", "payload": "", "expected_operation": "answer_without_memory", "expected_layer": "none"},
 ]
 
 # FunctionGemma: must use role "developer" + this exact phrase; tools via apply_chat_template(tools=)
@@ -115,20 +116,11 @@ def build_fg_prompt(processor, query: str, payload: str):
         tokenize=True, return_tensors="pt", return_dict=True,
     )
 
-def parse_fg_output(raw: str) -> str | None:
-    """
-    Parse FunctionGemma output: <start_function_call>call:name{p:<escape>v<escape>}<end_function_call>
-    Falls back to substring scan.
-    """
-    name_match = re.search(r'call:(\w+)\{', raw)
-    if name_match:
-        name = name_match.group(1)
-        if name in VALID_ROUTES:
-            return name
-    for route in ROUTE_TOKENS:
-        if route in raw:
-            return route
-    return None
+def parse_fg_output(raw: str, query: str = "") -> RouteDecision | None:
+    try:
+        return parse_functiongemma_output(raw, query=query)
+    except RouteParseError:
+        return None
 
 def infer_fg(processor, model, query: str, payload: str, device: str):
     encoded = build_fg_prompt(processor, query, payload)
@@ -168,28 +160,11 @@ def build_q3_prompt(tokenizer, query: str, payload: str):
         tokenize=True, return_tensors="pt", return_dict=True,
     )
 
-def parse_q3_output(raw: str) -> str | None:
-    raw = raw.strip()
+def parse_q3_output(raw: str, query: str = "") -> RouteDecision | None:
     try:
-        obj = json.loads(raw)
-        calls = obj.get("tool_calls", [])
-        if calls and calls[0].get("name") in VALID_ROUTES:
-            return calls[0]["name"]
-    except Exception:
-        pass
-    match = re.search(r'\{[\s\S]*?"tool_calls"[\s\S]*?\}', raw)
-    if match:
-        try:
-            obj = json.loads(match.group())
-            calls = obj.get("tool_calls", [])
-            if calls and calls[0].get("name") in VALID_ROUTES:
-                return calls[0]["name"]
-        except Exception:
-            pass
-    for route in ROUTE_TOKENS:
-        if route in raw:
-            return route
-    return None
+        return parse_json_tool_output(raw, query=query)
+    except RouteParseError:
+        return None
 
 def infer_q3(tokenizer, model, query: str, payload: str, device: str):
     encoded   = build_q3_prompt(tokenizer, query, payload)
@@ -208,54 +183,23 @@ def infer_q3(tokenizer, model, query: str, payload: str, device: str):
     raw = tokenizer.decode(new_ids, skip_special_tokens=True)
     return raw, n_in, new_ids.shape[0], wall_ms
 
-# ─── Old Layer 2 approach (baseline) ─────────────────────────────────────────
+# ─── Qwen-only baseline ──────────────────────────────────────────────────────
 
 def run_layer2_baseline(q3_tok, q3_mdl, device: str) -> list[dict]:
-    """Replicate layer2_tests.py: Qwen-only, manual chat template, regex extraction."""
+    """Qwen-only comparison using the same strict action-call contract."""
     results = []
     for tc in TEST_CASES:
-        router_prompt = (
-            "<|im_start|>system\n"
-            "You are a routing classification engine. You must map the user query to one of these exact terms: 'STM', 'LTM', 'Tree', 'Cloud'.\n"
-            "Here is the routing logic:\n"
-            "- If the query asks about 'recent discussion' or 'what we just did', route to STM.\n"
-            "- If the query states a preference or long-lasting rule (e.g. 'always use X'), route to LTM.\n"
-            "- If the query asks to fix code, analyze syntax, or search a file structure, route to Tree.\n"
-            "- If the query asks for general world knowledge (e.g. Weather, history), route to Cloud.\n"
-            "You MUST output exactly ONE word.\n<|im_end|>\n"
-            f"<|im_start|>user\nQuery: '{tc['query']}'<|im_end|>\n"
-            "<|im_start|>assistant\n"
+        raw, _, _, wall_ms = infer_q3(
+            q3_tok, q3_mdl, tc["query"], tc["payload"], device
         )
-        inputs = q3_tok(router_prompt, return_tensors="pt").to(device)
-        n_in = inputs["input_ids"].shape[1]
-        t0 = time.perf_counter()
-        with torch.no_grad():
-            out = q3_mdl.generate(
-                **inputs, max_new_tokens=100,
-                do_sample=False,
-                pad_token_id=q3_tok.eos_token_id,
-            )
-        wall_ms = (time.perf_counter() - t0) * 1000.0
-        raw = q3_tok.decode(out[0][n_in:], skip_special_tokens=True).strip()
-
-        # Old regex approach
-        matched = None
-        if "STM" in raw:   matched = "STM"
-        elif "LTM" in raw: matched = "LTM"
-        elif "Tree" in raw:matched = "Tree"
-        elif "Cloud" in raw:matched = "Cloud"
-
-        # Map expected to old label format
-        expected_short = tc["expected"].replace("route_to_", "").upper()
-        if expected_short == "TREE": expected_short = "Tree"
-        if expected_short == "CLOUD": expected_short = "Cloud"
-
-        passed = matched == expected_short if matched else False
+        decision = parse_q3_output(raw, tc["query"])
+        got = f"{decision.operation}:{decision.layer}" if decision else "invalid-output"
+        expected = f"{tc['expected_operation']}:{tc['expected_layer']}"
         results.append({
             "query":    tc["query"],
-            "expected": expected_short,
-            "got":      matched or f"NONE (raw: {raw[:60]})",
-            "passed":   passed,
+            "expected": expected,
+            "got":      got,
+            "passed":   got == expected,
             "wall_ms":  round(wall_ms, 1),
             "raw":      raw[:80],
         })
@@ -268,27 +212,34 @@ def run_new_router(fg_proc, fg_mdl, q3_tok, q3_mdl, device: str) -> list[dict]:
     for tc in TEST_CASES:
         # Tier 1 — FunctionGemma (correct format: developer role + tools= param)
         raw_fg, n_in_fg, n_new_fg, t_fg = infer_fg(fg_proc, fg_mdl, tc["query"], tc["payload"], device)
-        route = parse_fg_output(raw_fg)
+        decision = parse_fg_output(raw_fg, tc["query"])
         tier = "FunctionGemma-270M"
         wall_ms = t_fg
 
         # Tier 2 fallback — Qwen (JSON prompt format)
-        if route is None:
+        if decision is None:
             raw_q3, n_in_q3, n_new_q3, t_q3 = infer_q3(q3_tok, q3_mdl, tc["query"], tc["payload"], device)
-            route = parse_q3_output(raw_q3)
+            decision = parse_q3_output(raw_q3, tc["query"])
             tier = "Qwen3.5-0.8B (fallback)"
             wall_ms = t_fg + t_q3
 
         # Default
-        if route is None:
-            route = "route_to_cloud"
+        if decision is None:
+            decision = RouteDecision(
+                operation="answer_without_memory",
+                layer="none",
+                confidence=0.0,
+                source="fallback",
+            )
             tier = "default-fallback"
 
-        passed = (route == tc["expected"])
+        got = f"{decision.operation}:{decision.layer}"
+        expected = f"{tc['expected_operation']}:{tc['expected_layer']}"
+        passed = got == expected
         results.append({
             "query":    tc["query"],
-            "expected": tc["expected"],
-            "got":      route,
+            "expected": expected,
+            "got":      got,
             "passed":   passed,
             "tier":     tier,
             "wall_ms":  round(wall_ms, 1),
@@ -306,8 +257,8 @@ def main():
     fg_proc, fg_mdl = load_fg(FG_MODEL_ID, device)
     q3_tok,  q3_mdl = load_q3(Q3_MODEL_ID, device)
 
-    # ── Baseline: Old Layer 2 (Qwen-only regex) ───────────────────────────
-    banner("BASELINE  -- Layer 2 approach (Qwen-only, regex extraction)")
+    # ── Baseline: Qwen-only strict action calls ───────────────────────────
+    banner("BASELINE  -- Qwen-only strict action calls")
     baseline = run_layer2_baseline(q3_tok, q3_mdl, device)
     b_pass = sum(1 for r in baseline if r["passed"])
     b_avg  = sum(r["wall_ms"] for r in baseline) / len(baseline)
