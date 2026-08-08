@@ -144,13 +144,16 @@ the distinction between kernel latency and model inference latency.
 
 ## Documentation
 
+- [Getting Started](docs/getting-started.md)
 - [Architecture](docs/architecture.md)
 - [Protocol](docs/protocol.md)
 - [Memory semantics](docs/memory-semantics.md)
 - [Retrieval](docs/retrieval.md)
 - [Code graph](docs/code-graph.md)
 - [Structured reviews](docs/structured-reviews.md)
+- [Configuration Reference](docs/configuration-reference.md)
 - [Evaluation](docs/evaluation.md)
+- [Installation & Commands](docs/installation.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Security](SECURITY.md)
 - [v0.1 reproducible baseline](docs/baseline-v0.1.md)

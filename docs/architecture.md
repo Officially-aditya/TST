@@ -1,8 +1,8 @@
-# v0.2 architecture
+# TST Architecture v0.2
 
-TST separates intent, memory planning, transport and generation so a retrieval
-question cannot accidentally become a write merely because both use the same
-memory tier.
+TST separates intent, memory planning, transport, and generation so a retrieval question cannot accidentally become a write merely because both use the same memory tier.
+
+## High-Level Data Flow
 
 ```text
 input
@@ -15,41 +15,176 @@ input
   -> schema/source validation for reviews
 ```
 
-## Boundaries
+## Component Boundaries
 
-- `tst.routing` returns an operation and layer, with source and confidence.
-- `tst.memory` builds canonical keys, records and bounded retrieval context.
-- `tst.kernel` is the only Python owner of kernel process I/O. Both CLI and
-  FastAPI callers use the same request/response envelopes.
-- `tst.analysis` scans source under an explicit root, parses symbols and builds
-  an in-memory repository graph. The graph is rebuilt from source.
-- `tst.worker` defines strict code-review output and verifies each finding
-  against indexed source before display.
-- `tst_memory` owns STM lifecycle, persistent LTM, Tree operations, metrics and
-  protocol validation.
+### 1. Action Router (`tst.routing`)
 
-The v1 protocol uses one JSON request and response per line. Request IDs are
-echoed, and error diagnostics include an escaped request ID and code without
-logging complete private request payloads.
-STDIO is the only kernel transport for v0.2; no component assumes a Rust HTTP
-service.
+**Responsibility**: Classify user input into a canonical operation + memory layer.
 
-## Runtime and optional dependencies
+**Returns**: Operation (store/get/update/delete/search), Layer (stm/ltm/tree), Source (deterministic/model), Confidence (0.0–1.0)
 
-Protocol and deterministic components have no model-runtime dependency.
-Pydantic is the only core Python dependency. FastAPI, Torch/Transformers and
-Tree-sitter grammar wheels are separate installation extras. This keeps
-diagnostics, kernel operations and Python repository analysis usable on hosts
-where model or native parser wheels are not installed.
+**Two routing modes**:
+- **Deterministic** (default): Rule-based, zero model dependency, 100% reproducible
+- **Model-backed** (optional): FunctionGemma/Qwen for ambiguous cases, requires `models` extra
 
-The repository graph is deliberately not persisted in v0.2. Its schema is
-still evolving and content-hash incremental parsing makes reconstruction
-cheap for unchanged files.
+**Key design**: Routing is pure classification — it never mutates memory. The operation/layer decision is explicit and auditable.
 
-## Deliberate non-goals
+```python
+# Example routing result
+RoutingDecision(
+    operation="memory.store",
+    layer="ltm",
+    source="deterministic",
+    confidence=0.95,
+    matched_pattern="preference:.*"
+)
+```
 
-v0.2 does not add vector search, distributed memory, multi-user authentication,
-a desktop or web UI, cloud orchestration, automatic fix execution, every
-language, Tree persistence, or model fine-tuning. External escalation is only
-a gated route decision when an operator explicitly configures a provider; TST
-does not orchestrate that provider.
+### 2. Memory Planner (`tst.memory.planner`)
+
+**Responsibility**: Transform routed intent into canonical keys and structured records.
+
+**Canonical key format**: `namespace:scope:category:identifier`
+
+```text
+user:default:preference:programming_language
+session:abc123:context:service_name
+project:tst:file:router%2Fserver.py
+```
+
+**Key normalization**: Segments are lowercased, whitespace collapsed, reserved characters percent-escaped. Reserved prefixes (`internal:`, `system:`) and traversal components (`..`) are rejected.
+
+**Record structure**:
+```python
+MemoryRecord(
+    key="user:default:preference:language",
+    value="TypeScript",
+    memory_type="preference",
+    source_text="I prefer TypeScript for frontend work",
+    created_at=1692345600.0,
+    updated_at=1692345600.0,
+    confidence=0.9,
+    tags=["frontend", "language"],
+    source="user_explicit",
+    layer="ltm",
+    reinforcement=2.0,
+    deleted=False
+)
+```
+
+### 3. Kernel Client (`tst.kernel`)
+
+**Responsibility**: Sole Python owner of kernel process I/O. Manages subprocess lifecycle, request/response correlation, timeouts, and error handling.
+
+**Transport**: STDIN/STDOUT NDJSON (one JSON object per line). No HTTP, no WebSockets.
+
+**Key guarantees**:
+- Request IDs echoed in responses for correlation
+- Configurable timeout (default 30s) with process termination on timeout
+- 8 MiB response size limit (configurable)
+- stderr reserved for diagnostics only; stdout = `READY` + protocol lines
+- Graceful shutdown flushes LTM before exit
+
+### 4. Rust Kernel (`tst_memory`)
+
+**Responsibility**: Owns all memory state, persistence, and protocol validation.
+
+**Core subsystems**:
+| Subsystem | Responsibility |
+|-----------|----------------|
+| STM | Session-scoped, decaying, promotable to LTM |
+| LTM | Durable, snapshot-persisted, canonical-key upsert |
+| Tree | Repository symbols/edges, rebuilt from source |
+| Persistence | Atomic snapshots, checksums, corruption recovery |
+| Protocol | v1 validation, unknown field rejection, metrics |
+
+**Protocol v1**: Strict envelope with `protocol_version`, `request_id`, `operation`, `params`. Unknown fields rejected. 4 MiB request limit.
+
+### 5. Repository Analysis (`tst.analysis`)
+
+**Responsibility**: Build line-aware code graph from source without executing code.
+
+**Parser strategy**:
+| Language | Primary | Fallback |
+|----------|---------|----------|
+| Python | Tree-sitter | stdlib `ast` (always works) |
+| JavaScript/JSX | Tree-sitter | Structural regex |
+| TypeScript/TSX | Tree-sitter | Structural regex |
+| Rust | Tree-sitter | Structural regex |
+
+**Graph nodes**: Project, File, Symbol (function, class, struct, etc.)
+**Graph edges**: `contains`, `defines`, `imports`, `calls`, `references`, `inherits`, `implements`, `tests`
+
+**Incremental scanning**: SHA-256 per file; unchanged files skip parsing; changed files rebuild transactionally; deleted files remove subgraph.
+
+**Safety**: Rooted scan (no traversal outside root), no symlink following, skips VCS/build/cache/secret/binary files, configurable byte/file limits.
+
+### 6. Review Worker (`tst.worker`)
+
+**Responsibility**: Generate structured code-review findings validated against indexed source.
+
+**Output schema**: `CodeReviewOutput` containing `CodeIssue[]` — no prose allowed.
+
+**Validation pipeline**:
+1. Parse JSON (schema validation)
+2. File exists in project, line range valid
+3. Content hash matches current file (prevents stale findings)
+4. Related symbols exist in named file (if code graph supplied)
+5. Deduplication by identity
+6. Confidence threshold filtering
+
+**Model discipline**: `temperature=0`, `do_sample=false`, JSON schema injected. Raw output retained only in explicit debug mode.
+
+## Runtime Dependencies
+
+```
+Core (always):
+  pydantic >= 2.0
+
+Optional extras:
+  [analysis]  -> tree-sitter, tree-sitter-languages (JS/TS/Rust grammars)
+  [router]    -> fastapi, uvicorn
+  [models]    -> torch, transformers, accelerate, huggingface-hub
+```
+
+**Design principle**: Deterministic paths (routing, kernel, Python AST analysis) work with zero optional dependencies.
+
+## Persistence Strategy
+
+| Component | Persisted | Format |
+|-----------|-----------|--------|
+| LTM | Yes | `.tst/ltm.snapshot` (atomic, checksummed) |
+| STM | No | In-memory only, rebuilds empty on restart |
+| Tree | No | Rebuilt from source on each `tst analyze` |
+| Protocol | N/A | NDJSON over STDIO |
+
+**Snapshot guarantees**:
+- Written to temp file → `fsync` → atomic rename
+- Previous valid snapshot preserved as `ltm.snapshot.previous`
+- Corrupt snapshot preserved as timestamped diagnostic
+- Symlink targets rejected
+
+## Non-Goals (v0.2)
+
+| Category | Explicitly Not Included |
+|----------|------------------------|
+| Search | Vector/embedding search |
+| Distribution | Multi-node, replication, clustering |
+| Auth | Multi-user, RBAC, OAuth |
+| UI | Desktop, web dashboard, TUI |
+| Cloud | Managed service, hosted kernel |
+| Execution | Auto-fix, code modification, CI/CD |
+| Languages | Beyond Python/JS/TS/Rust |
+| Tree persistence | Graph not saved to disk |
+| Fine-tuning | Model training/RLHF |
+
+**External escalation**: Only as a gated route decision when operator explicitly configures a provider. TST does not orchestrate the provider.
+
+## Security Boundaries
+
+- **No code execution**: Scanner never imports, evaluates, or runs analyzed code
+- **No secret leakage**: Secret filenames (`.env`, `id_rsa`, `*.pem`, etc.) skipped by default
+- **Path confinement**: All scans rooted; traversal attempts rejected
+- **Protocol validation**: Unknown fields rejected; request/response size limits
+- **Process isolation**: Kernel runs as separate process; Python cannot directly mutate kernel memory
+- **Audit trail**: Request IDs correlated across router → planner → kernel → response
