@@ -2,6 +2,21 @@
 
 This guide walks you through installing TST, building the kernel, and running your first memory operations.
 
+## First-Run Flow
+
+```mermaid
+flowchart LR
+    PY["Create Python environment"] --> CORE["Install core package"]
+    CORE --> BUILD["Build Rust kernel"]
+    BUILD --> DOCTOR["Run tst doctor"]
+    DOCTOR --> MEMORY["Try memory commands"]
+    DOCTOR --> GRAPH["Run tst analyze ."]
+    CORE -. optional .-> ANALYSIS["Install [analysis] extra"]
+    CORE -. optional .-> MODELS["Install [models] extra"]
+    ANALYSIS --> GRAPH
+    MODELS --> CHAT["Run tst chat"]
+```
+
 ## Prerequisites
 
 - **Python 3.10+** (tested on 3.10, 3.11, 3.12)

@@ -77,6 +77,50 @@ TST uses one newline-delimited JSON request and response per line over the Rust 
 - **Timeout**: Configurable (default 30s); timeout terminates kernel process
 - **NDJSON**: Exactly one JSON object per line; no pretty-printing
 
+## Request/Response Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant C as Python client
+    participant K as Rust kernel
+    participant V as Strict validator
+    participant O as Operation handler
+    C->>K: Start subprocess
+    K-->>C: READY
+    C->>K: One NDJSON request with request_id
+    K->>V: Parse JSON and validate envelope
+    alt Malformed JSON
+        V-->>K: Stream cannot be correlated
+        K-->>C: Exit process
+    else Unknown field or invalid params
+        V-->>K: Validation error
+        K-->>C: Error response with same request_id
+    else Valid request
+        V-->>O: Dispatch operation
+        O-->>K: Result or typed error
+        K-->>C: One NDJSON response with same request_id
+    end
+```
+
+The echoed request ID is the correlation boundary. A timeout, malformed
+response, or mismatched ID makes the stream unsafe to reuse, so the Python
+client terminates the process and starts a fresh one when needed.
+
+## Validation and Dispatch Flow
+
+```mermaid
+flowchart TD
+    LINE["Input line"] --> JSON{"Valid JSON?"}
+    JSON -->|no| EXIT["Terminate stream"]
+    JSON -->|yes| ENV{"Strict envelope valid?"}
+    ENV -->|no| E1["INVALID_ENVELOPE response"]
+    ENV -->|yes| OP{"Known operation and params?"}
+    OP -->|no| E2["UNKNOWN_OPERATION or INVALID_PARAMS"]
+    OP -->|yes| HANDLER["Dispatch handler"]
+    HANDLER --> RESULT["Result + metrics.kernel_ms"]
+    RESULT --> RESPONSE["Echo request_id in response"]
+```
+
 ---
 
 ## Operations Reference

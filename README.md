@@ -5,9 +5,24 @@ kernel provides short-term memory, persistent long-term memory and a code Tree;
 the Python package adds action-aware routing, canonical memory planning,
 retrieval, safe repository indexing and an installed CLI.
 
-```text
-input -> action router -> memory planner -> shared STDIO client
-      -> Rust kernel -> ranked context -> local worker
+## System at a glance
+
+```mermaid
+flowchart LR
+    I["User, CLI, or API"] --> R["ActionRouter<br/>tst.routing"]
+    R -->|operation + layer| P["MemoryPlanner<br/>tst.memory"]
+    P -->|versioned request| C["StdioKernelClient<br/>tst.kernel"]
+    C -->|NDJSON over STDIO| K["Rust kernel<br/>tst_memory"]
+    K --> S["STM<br/>session context"]
+    K --> L["LTM<br/>persistent records"]
+    K --> T["Tree<br/>kernel graph"]
+    S --> X["Ranked memory context"]
+    L --> X
+    T --> X
+    A["Repository source"] --> G["tst.analysis<br/>CodeGraph"]
+    G --> X
+    X --> W["Local worker<br/>answer or review"]
+    R -->|no-memory route| W
 ```
 
 Version 0.2 uses one versioned newline-delimited JSON protocol everywhere. The

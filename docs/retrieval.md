@@ -6,16 +6,21 @@ v0.2 intentionally uses no vector database. Retrieval is deterministic, inspecta
 
 Production dispatch and evaluation use the same `RetrievalPipeline`:
 
-```
-1. Exact canonical-key lookup
-2. Bounded prefix/category candidate lookup
-3. Token-based lexical scoring with conservative synonym groups
-4. Reinforcement, recency, and source-confidence reranking
-5. Newest-version deduplication and deletion filtering
-6. Item and character-budget context selection
+```mermaid
+flowchart LR
+    Q["Query + requested layer"] --> EXACT["1. Exact canonical-key lookup"]
+    EXACT -->|exact candidate or miss| CANDIDATES["2. Bounded prefix/category expansion"]
+    CANDIDATES --> LEXICAL["3. Lexical score<br/>tokens + curated synonyms"]
+    LEXICAL --> RERANK["4. Rerank<br/>key, reinforcement, recency, confidence"]
+    RERANK --> FILTER["5. Deduplicate + filter tombstones"]
+    FILTER --> BUDGET["6. Select within item/char/token budgets"]
+    BUDGET --> OUT["RetrievalContext"]
 ```
 
 Each stage narrows candidates; early stages are fast filters, later stages do precise ranking.
+
+The requested layer is applied before ranking, so one retrieval request cannot
+silently mix STM and LTM records.
 
 ---
 

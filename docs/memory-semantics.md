@@ -2,6 +2,28 @@
 
 TST separates session-scoped STM from durable LTM. Tree Memory is rebuilt from source and is never included in LTM snapshots.
 
+## Memory Hierarchy and Lifecycle
+
+```mermaid
+flowchart TB
+    INTENT["User intent"] --> ROUTE["Route operation + layer"]
+    ROUTE -->|temporary context| STM["STM<br/>bounded ring buffer"]
+    ROUTE -->|durable fact or preference| LTM["LTM<br/>canonical-key store"]
+    SOURCE["Repository source"] --> TREE["Tree Memory<br/>rebuilt code relationships"]
+    STM --> SCORE["Reinforcement + time decay"]
+    SCORE -->|score >= promotion threshold| PROMOTE["Promote complete record"]
+    PROMOTE --> LTM
+    SCORE -->|score < expiry threshold| EXPIRE["Expire and release slot"]
+    LTM --> DIRTY["Dirty snapshot state"]
+    DIRTY -->|debounce, save, or shutdown| SNAP["Checksummed atomic snapshot"]
+    STM -->|memory.get / search| CTX["Retrieved context"]
+    LTM -->|memory.get / search| CTX
+    TREE -->|tree.find / tree.query| CTX
+```
+
+The three branches have different lifetimes: STM follows the session, LTM
+survives restart through snapshots, and Tree Memory follows the source tree.
+
 ## Canonical Records
 
 ### Key Format
@@ -108,6 +130,18 @@ When at capacity and new entry arrives:
 
 ### Promotion to LTM
 
+```mermaid
+stateDiagram-v2
+    [*] --> STMEntry
+    STMEntry --> STMEntry: read or write reinforcement
+    STMEntry --> STMEntry: wall-clock decay
+    STMEntry --> LTMEntry: score >= promotion threshold
+    STMEntry --> [*]: score < expiry threshold
+    LTMEntry --> LTMEntry: canonical-key upsert
+    LTMEntry --> Snapshot: dirty + debounce or shutdown
+    Snapshot --> [*]
+```
+
 When an entry's score ≥ `promotion_threshold`:
 
 1. **Complete key + payload** moved to LTM (canonical-key upsert)
@@ -147,15 +181,18 @@ LTM marked dirty on any mutation (store/update/delete/promotion). Write occurs w
 
 ### Atomic Write Procedure
 
+```mermaid
+flowchart LR
+    SERIALIZE["Serialize LTM"] --> HASH["Compute SHA-256"]
+    HASH --> TEMP["Write temp snapshot"]
+    TEMP --> FSYNC["fsync temp file"]
+    FSYNC --> PREVIOUS["Move current to .previous"]
+    PREVIOUS --> RENAME["Atomic rename temp to primary"]
+    RENAME --> READY["Snapshot is durable<br/>metadata updated"]
 ```
-1. Serialize LTM to JSON
-2. Compute SHA-256 checksum
-3. Write to temp file: .tst/ltm.snapshot.tmp.<pid>.<timestamp>
-4. fsync temp file
-5. Rename current snapshot → .tst/ltm.snapshot.previous (if exists)
-6. Rename temp → .tst/ltm.snapshot (atomic)
-7. Update metadata
-```
+
+The previous snapshot remains available as a recovery point if validation of
+the new primary fails on a later startup.
 
 ### Recovery
 

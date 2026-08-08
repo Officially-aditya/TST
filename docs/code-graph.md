@@ -2,6 +2,30 @@
 
 `tst.analysis.IncrementalIndexer` turns a selected source root into a line-aware graph without importing or executing project code.
 
+## Indexing Data Flow
+
+```mermaid
+flowchart TB
+    ROOT["Source root"] --> SCAN["ProjectScanner<br/>root, limits, exclusions"]
+    SCAN -->|safe source files| HASH["Compute file hashes"]
+    SCAN -->|secret, binary, oversized, or unsafe| SKIP["Record skipped reason"]
+    HASH --> CHANGE{"New or changed?"}
+    CHANGE -->|no| UNCHANGED["Reuse ParsedFile and subtree"]
+    CHANGE -->|yes| PARSER["ParserRegistry<br/>Tree-sitter or fallback"]
+    PARSER --> PARSED["ParsedFile<br/>symbols + imports + references"]
+    PARSED --> BUILD["GraphBuilder<br/>nodes + hierarchy edges"]
+    BUILD --> RESOLVE["SymbolResolver<br/>imports, calls, types, tests"]
+    RESOLVE --> GRAPH["CodeGraph"]
+    DELETE["Deleted files"] --> GRAPH
+    UNCHANGED --> GRAPH
+    SKIP --> REPORT["IndexReport"]
+    GRAPH --> REPORT
+```
+
+Only new or changed files are parsed. Updates are staged and resolved before
+the active graph is replaced, which keeps the previous valid graph available if
+parsing or linking fails.
+
 ## Parser Selection
 
 | Language | File Suffixes | Primary Parser | Dependency-Light Behavior |
@@ -58,6 +82,26 @@ class ParsedFile:
 ---
 
 ## Nodes and Edges (`tst.analysis.graph_builder`)
+
+### Example Code Graph
+
+The graph is a directed relationship map, not a rendered copy of source code:
+
+```mermaid
+flowchart LR
+    PROJECT["Project"] -->|contains| FILE_A["router.py"]
+    PROJECT -->|contains| FILE_B["test_router.py"]
+    FILE_A -->|defines| ROUTE["run_route()"]
+    FILE_A -->|defines| DECISION["RouteDecision"]
+    FILE_A -->|imports| PLANNER["memory.planner"]
+    ROUTE -->|calls| DECISION
+    FILE_B -->|defines| TEST["test_route()"]
+    TEST -->|tests| ROUTE
+    CHILD["SpecialRouter"] -->|inherits| BASE["BaseRouter"]
+```
+
+Each edge carries an explicit kind and confidence. Traversal can therefore
+prioritize calls and tests over broad containment edges.
 
 ### Node Representation (`GraphNode`)
 
@@ -119,6 +163,20 @@ class GraphEdge:
 ---
 
 ## Graph Traversal & Queries
+
+### Budgeted Traversal Flow
+
+```mermaid
+flowchart TD
+    START["find start node"] --> QUEUE["Breadth-first queue"]
+    QUEUE --> POP["Pop highest-priority candidate"]
+    POP --> BUDGET{"Depth, node, and token budgets available?"}
+    BUDGET -->|no| TRUNCATED["Return GraphSlice<br/>truncated = true"]
+    BUDGET -->|yes| ADD["Add node and edge"]
+    ADD --> EDGES["Enqueue calls, tests, imports, types, references"]
+    EDGES --> QUEUE
+    QUEUE -->|empty| COMPLETE["Return bounded GraphSlice"]
+```
 
 ### `CodeGraph.query()`
 

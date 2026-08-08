@@ -2,6 +2,37 @@
 
 Conversational text and code-review findings have different safety needs. A review worker must generate a JSON object matching `CodeReviewOutput`; prose surrounding the object is treated as a parse failure.
 
+## Review Validation Flow
+
+```mermaid
+flowchart TD
+    RAW["Worker output"] --> SIZE{"Within raw-output limit?"}
+    SIZE -->|no| REJECT_SIZE["Reject: size limit"]
+    SIZE -->|yes| JSON["Parse JSON"]
+    JSON -->|failure| REJECT_PARSE["Reject: parse or schema failure"]
+    JSON -->|valid| FILE["Resolve root-relative file"]
+    FILE -->|missing or unsafe| REJECT_FILE["Reject: invalid source path"]
+    FILE -->|valid| LINES["Check line range + UTF-8"]
+    LINES -->|failure| REJECT_LINES["Reject: invalid source"]
+    LINES -->|valid| HASH["Compute actual SHA-256"]
+    HASH --> HASH_PRESENT{"Finding includes a hash?"}
+    HASH_PRESENT -->|no + required| REJECT_REQUIRED["Reject: missing required hash"]
+    HASH_PRESENT -->|no + optional| SYMBOLS{"Graph supplied and symbols listed?"}
+    HASH_PRESENT -->|yes, mismatch| REJECT_HASH["Reject: stale finding"]
+    HASH_PRESENT -->|yes, current| SYMBOLS
+    SYMBOLS -->|missing symbol| REJECT_SYMBOL["Reject: unknown symbol"]
+    SYMBOLS -->|none or all present| DEDUPE["Deduplicate by location + title"]
+    DEDUPE --> CONF{"Confidence >= threshold?"}
+    CONF -->|no| FLAG["Flag low confidence"]
+    CONF -->|yes| ACCEPT["Accept for display"]
+```
+
+The validator turns model output into a bounded, source-grounded result. A
+finding can be syntactically valid and still be rejected when its file, line
+range, content hash, or related symbols no longer match the repository.
+`ReviewWorker` enables required-hash mode; standalone `ReviewValidator` can
+allow missing hashes when `require_content_hash` is disabled.
+
 ## Output Schema
 
 ### `CodeReviewOutput`

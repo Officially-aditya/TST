@@ -4,15 +4,54 @@ TST separates intent, memory planning, transport, and generation so a retrieval 
 
 ## High-Level Data Flow
 
-```text
-input
-  -> deterministic/model action router
-  -> memory planner and canonical keys
-  -> shared StdioKernelClient
-  -> versioned NDJSON Rust kernel
-  -> ranked memory or code-graph context
-  -> local worker
-  -> schema/source validation for reviews
+```mermaid
+flowchart LR
+    I["Input: user, CLI, or API"] --> R["Action router<br/>tst.routing"]
+    R -->|operation + layer| P["Memory planner<br/>tst.memory.planner"]
+    P -->|canonical key + params| C["Kernel client<br/>tst.kernel"]
+    C -->|one JSON object per line| K["Rust kernel<br/>tst_memory"]
+    K --> M["STM / LTM / Tree"]
+    M -->|response context| C
+    C --> CTX["Ranked memory context"]
+    A["Repository scanner<br/>tst.analysis"] --> CG["Python CodeGraph"]
+    CG --> CTX
+    CTX --> W["Local worker<br/>tst.worker"]
+    W --> V["Schema + source validation"]
+    V --> O["Answer or structured findings"]
+    R -->|answer_without_memory| O
+```
+
+The Python side owns routing, planning, repository analysis, and process I/O.
+The Rust side owns memory state, Tree operations, persistence, and protocol
+validation. The two sides communicate only through the versioned STDIO
+boundary.
+
+## Code-Level Component Graph
+
+This graph shows the main import and data hand-off boundaries. It is a compact
+map for navigating from a command or request to the implementation that owns
+it.
+
+```mermaid
+flowchart TB
+    CLI["tst.cli"] --> ROUTER["tst.routing<br/>ActionRouter"]
+    CLI --> INDEX["tst.analysis<br/>IncrementalIndexer"]
+    CLI --> CLIENT["tst.kernel<br/>StdioKernelClient"]
+    ROUTER --> PLAN["tst.memory.planner<br/>MemoryPlanner"]
+    PLAN --> PROTO["tst.protocol<br/>request models + operations"]
+    CLIENT --> PROTO
+    CLIENT --> PROC["tst.kernel.process<br/>subprocess lifecycle"]
+    INDEX --> SCAN["ProjectScanner"]
+    INDEX --> PARSE["ParserRegistry"]
+    INDEX --> BUILD["GraphBuilder"]
+    BUILD --> RESOLVE["SymbolResolver"]
+    BUILD --> GRAPH["CodeGraph"]
+    WORKER["tst.worker"] --> GRAPH
+    WORKER --> VALIDATE["ReviewValidator"]
+    CLIENT --> KERNEL["tst_memory<br/>Rust kernel"]
+    KERNEL --> STM["STM"]
+    KERNEL --> LTM["LTM + snapshots"]
+    KERNEL --> TREE["Tree operations"]
 ```
 
 ## Component Boundaries
