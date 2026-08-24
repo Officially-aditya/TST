@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tst-memory"
-version = "0.2.0"
+version = "0.3.0"
 description = "A local structured-memory kernel and repository intelligence layer for small language models"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -58,6 +58,9 @@ include-package-data = true
 where = ["."]
 include = ["tst*", "router*"]
 namespaces = false
+
+[tool.setuptools.package-data]
+"tst.server" = ["static/*", "static/assets/*"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

@@ -92,6 +92,132 @@ def _kernel_build() -> int:
     return 0
 
 
+def _service(project: str | None = None):
+    from tst.service.service import TSTService
+
+    return TSTService(project)
+
+
+def _context(path_value: str | None, query: str, *, budget: int, as_json: bool) -> int:
+    service = _service(path_value)
+    try:
+        pack = service.retrieve_context(query, budget=budget)
+        document = pack.model_dump(mode="json")
+        if as_json:
+            print(json.dumps(document, indent=2, default=str))
+        else:
+            print(pack.as_prompt() or "No matching context.")
+            print(f"\nEstimated tokens: {pack.estimated_tokens}")
+        return 0
+    finally:
+        service.close()
+
+
+def _init(path_value: str | None, *, as_json: bool, no_index: bool, integrations: list[str]) -> int:
+    service = _service(path_value)
+    try:
+        index_report: dict[str, object] | None = None
+        index_error: str | None = None
+        if not no_index:
+            try:
+                index_report = service.index_project()
+            except Exception as exc:
+                index_error = f"{type(exc).__name__}: {exc}"
+        installed: dict[str, object] = {}
+        for provider in integrations:
+            try:
+                installed[provider] = service.install_integration(provider)
+            except Exception as exc:
+                installed[provider] = {"error": str(exc)}
+        detected = {
+            "claude": (service.project.root / ".claude").is_dir(),
+            "codex": (service.project.root / ".agents").is_dir(),
+        }
+        document = {
+            "project": service.project.to_dict(),
+            "index": index_report,
+            "index_error": index_error,
+            "detected_agents": detected,
+            "integrations": installed,
+        }
+        if as_json:
+            print(json.dumps(document, indent=2, default=str))
+        else:
+            print("TST initialized")
+            print(f"\nProject\n{service.project.name}")
+            print(f"\nRepository\n{service.project.root}")
+            if index_report is not None:
+                print(f"\nIndexed\n{index_report.get('parsed_files', 0)} changed files")
+            elif index_error:
+                print(f"\nIndex warning\n{index_error}")
+            for provider, result in installed.items():
+                print(f"{provider}: {result}")
+        return 0 if index_error is None else 2
+    finally:
+        service.close()
+
+
+def _status(path_value: str | None, *, as_json: bool) -> int:
+    service = _service(path_value)
+    try:
+        document = service.status()
+        if as_json:
+            print(json.dumps(document, indent=2, default=str))
+        else:
+            project = document["project"]
+            print(f"{project['name']}  {project['root']}")
+            print(f"Kernel: {document['kernel']}")
+            print(f"Memory: {document['memory_counts']}")
+            if document["errors"]:
+                print(f"Errors: {', '.join(document['errors'])}")
+        return 0 if document["healthy"] else 1
+    finally:
+        service.close()
+
+
+def _projects(*, as_json: bool) -> int:
+    from tst.scope.registry import ProjectRegistry
+
+    projects = [project.to_dict() for project in ProjectRegistry().list()]
+    if as_json:
+        print(json.dumps(projects, indent=2))
+    else:
+        for project in projects:
+            print(f"{project['name']:<24} {project['root']}")
+    return 0
+
+
+def _serve(path_value: str | None, *, host: str, port: int, open_browser: bool) -> int:
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        print("TST server only binds to loopback addresses.", file=sys.stderr)
+        return 2
+    from tst.server.app import run
+
+    run(project=path_value, host=host, port=port, open_browser=open_browser)
+    return 0
+
+
+def _mcp(path_value: str | None) -> int:
+    from tst.integrations.mcp.server import serve
+
+    serve(project=path_value)
+    return 0
+
+
+def _connect(path_value: str | None, provider: str, *, force: bool, as_json: bool) -> int:
+    service = _service(path_value)
+    try:
+        document = service.install_integration(provider, force=force)
+        if as_json:
+            print(json.dumps(document, indent=2))
+        else:
+            for target, status in document.items():
+                print(f"{status}: {target}")
+        return 0
+    finally:
+        service.close()
+
+
 def _analyze(path_value: str, *, as_json: bool, symbol: str | None) -> int:
     from tst.analysis import IncrementalIndexer
 
@@ -200,6 +326,47 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--symbol")
     analyze.add_argument("--json", action="store_true", dest="as_json")
 
+    context = subcommands.add_parser("context", help="retrieve explainable project context")
+    context.add_argument("query", nargs="?")
+    context.add_argument("--query", dest="query_option")
+    context.add_argument("--project", dest="path_value")
+    context.add_argument("--budget", type=int, default=2_000)
+    context.add_argument("--json", action="store_true", dest="as_json")
+
+    init = subcommands.add_parser("init", help="initialize and register a project")
+    init.add_argument("path", nargs="?", default=None)
+    init.add_argument("--no-index", action="store_true")
+    init.add_argument("--connect", action="append", choices=["claude", "codex"], default=[])
+    init.add_argument("--json", action="store_true", dest="as_json")
+
+    status = subcommands.add_parser("status", help="show TST project and kernel status")
+    status.add_argument("--project", dest="path_value")
+    status.add_argument("--json", action="store_true", dest="as_json")
+
+    projects = subcommands.add_parser("projects", help="list registered projects")
+    projects.add_argument("--json", action="store_true", dest="as_json")
+
+    serve = subcommands.add_parser("serve", help="run the local TST API")
+    serve.add_argument("--project", dest="path_value")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8000)
+
+    ui = subcommands.add_parser("ui", help="run the local API and open the TST UI")
+    ui.add_argument("--project", dest="path_value")
+    ui.add_argument("--host", default="127.0.0.1")
+    ui.add_argument("--port", type=int, default=8000)
+
+    mcp = subcommands.add_parser("mcp", help="serve TST over MCP")
+    mcp_commands = mcp.add_subparsers(dest="mcp_command", required=True)
+    mcp_serve = mcp_commands.add_parser("serve", help="run the stdio MCP server")
+    mcp_serve.add_argument("--project", dest="path_value")
+
+    connect = subcommands.add_parser("connect", help="install a coding-agent integration")
+    connect.add_argument("provider", choices=["claude", "codex"])
+    connect.add_argument("--project", dest="path_value")
+    connect.add_argument("--force", action="store_true")
+    connect.add_argument("--json", action="store_true", dest="as_json")
+
     chat = subcommands.add_parser("chat", help="start the local model-backed chat REPL")
     chat.add_argument("--no-kernel", action="store_true")
     chat.add_argument("--no-worker", action="store_true")
@@ -216,6 +383,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _kernel_build()
     if args.command == "analyze":
         return _analyze(args.path, as_json=args.as_json, symbol=args.symbol)
+    if args.command == "context":
+        query = args.query_option or args.query
+        if not query:
+            parser.error("context requires a query")
+        return _context(args.path_value, query, budget=args.budget, as_json=args.as_json)
+    if args.command == "init":
+        return _init(args.path, as_json=args.as_json, no_index=args.no_index, integrations=args.connect)
+    if args.command == "status":
+        return _status(args.path_value, as_json=args.as_json)
+    if args.command == "projects":
+        return _projects(as_json=args.as_json)
+    if args.command == "serve":
+        return _serve(args.path_value, host=args.host, port=args.port, open_browser=False)
+    if args.command == "ui":
+        return _serve(args.path_value, host=args.host, port=args.port, open_browser=True)
+    if args.command == "mcp" and args.mcp_command == "serve":
+        return _mcp(args.path_value)
+    if args.command == "connect":
+        return _connect(args.path_value, args.provider, force=args.force, as_json=args.as_json)
     if args.command == "chat":
         return _chat(args)
     parser.error("unsupported command")

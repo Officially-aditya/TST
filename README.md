@@ -25,10 +25,11 @@ flowchart LR
     R -->|no-memory route| W
 ```
 
-Version 0.2 uses one versioned newline-delimited JSON protocol everywhere. The
-CLI, FastAPI wrapper and evaluations do not expect a separate Rust HTTP
-service. Memory decisions distinguish operations such as store, retrieve,
-update and forget from the selected STM/LTM/Tree layer.
+Version 0.3 keeps the same versioned newline-delimited JSON protocol while
+adding a Python-owned TST Control Plane. Global and project snapshots are
+separate, session context remains volatile, and the UI, MCP adapter, CLI, and
+agent skills all call one `TSTService` boundary. The Rust kernel is still a
+local STDIO child and is not exposed over HTTP.
 
 ## What TST is for
 
@@ -98,6 +99,30 @@ See [installation and commands](docs/installation.md) for the complete workflow.
 Wheel installations require a compatible `TST_KERNEL_BIN` unless their
 distributor explicitly bundles a platform binary; source checkouts can use
 `tst kernel build`.
+
+## Visible context layer
+
+Initialize a repository and inspect the exact context TST would assemble:
+
+```bash
+tst init
+tst context --query "implement authentication middleware" --json
+tst ui
+```
+
+The local control plane stores global memory in `~/.tst/global`, project
+memory in `.tst/ltm.snapshot`, and session memory in the active project kernel.
+It exposes the same operations through the local API and MCP:
+
+```bash
+tst serve
+tst mcp serve
+tst connect claude
+tst connect codex
+```
+
+See [Control Plane](docs/control-plane.md) for scope rules, API paths, event
+redaction, and integration details.
 
 ## Test
 
@@ -169,6 +194,7 @@ the distinction between kernel latency and model inference latency.
 - [Configuration Reference](docs/configuration-reference.md)
 - [Evaluation](docs/evaluation.md)
 - [Installation & Commands](docs/installation.md)
+- [Control Plane](docs/control-plane.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Security](SECURITY.md)
 - [v0.1 reproducible baseline](docs/baseline-v0.1.md)

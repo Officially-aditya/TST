@@ -31,3 +31,7 @@ layer4-results.json
 .DS_Store
 .idea/
 .vscode/
+
+# React build outputs
+ui/node_modules/
+ui/dist/

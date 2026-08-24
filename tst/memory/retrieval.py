@@ -235,6 +235,9 @@ def memory_record_from_payload(
                 break
     if isinstance(data, dict) and "memory_type" in data:
         candidate = dict(data)
+        # The Rust protocol annotates decoded records with its payload type;
+        # that transport-only field is not part of the Python MemoryRecord.
+        candidate.pop("payload_type", None)
         if key is not None:
             candidate.setdefault("key", key)
         if layer is not None:

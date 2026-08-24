@@ -7,8 +7,8 @@ utilities can be used without Torch or Transformers installed.
 
 from typing import Any
 
-__all__ = ["RouteDecision", "StdioKernelClient"]
-__version__ = "0.2.0"
+__all__ = ["ContextBroker", "RouteDecision", "Scope", "StdioKernelClient", "TSTService"]
+__version__ = "0.3.0"
 
 
 def __getattr__(name: str) -> Any:
@@ -22,4 +22,16 @@ def __getattr__(name: str) -> Any:
         from .routing.decision import RouteDecision
 
         return RouteDecision
+    if name == "ContextBroker":
+        from .context.broker import ContextBroker
+
+        return ContextBroker
+    if name == "Scope":
+        from .scope.models import Scope
+
+        return Scope
+    if name == "TSTService":
+        from .service.service import TSTService
+
+        return TSTService
     raise AttributeError(name)
