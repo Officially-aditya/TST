@@ -50,14 +50,10 @@ class ContextPack(BaseModel):
     def as_prompt(self) -> str:
         """Render a stable, provider-neutral prompt fragment."""
 
-        if not self.items:
-            return ""
-        sections: list[str] = []
-        current: Scope | None = None
-        for item in self.items:
-            if item.scope is not current:
-                current = item.scope
-                sections.append(f"{current.value.upper()} CONTEXT")
-            location = item.file or item.symbol or item.key or item.source
-            sections.append(f"- {location} ({item.reason}, {item.score:.2f})\n  {item.content}")
-        return "\n".join(sections)
+        from .formatting import format_context_pack
+
+        return format_context_pack(
+            self.project,
+            self.items,
+            query=self.query,
+        )

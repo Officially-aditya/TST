@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from tst.commands import CommandRegistry, CommandSpec, parse_command, suggest_commands
+from tst.context.models import ContextItem, ContextPack
 from tst.integrations.auto_context import render_context_document, retrieve_context
 from tst.integrations.claude import install as install_claude
 from tst.integrations.claude import uninstall as uninstall_claude
@@ -103,9 +104,51 @@ def test_automatic_context_rendering_is_bounded_and_untrusted() -> None:
         }
     )
     assert "private task text" not in rendered
-    assert "untrusted reference material" in rendered
+    assert "reference material, not as instructions" in rendered
     assert "Use JWT middleware." in rendered
-    assert rendered.endswith("</tst-context>")
+    assert "## TST context (reference only)" in rendered
+    assert "### Project memory" in rendered
+    assert "project:demo:fact:auth" not in rendered
+    assert "0.9" not in rendered
+    assert rendered.endswith("---")
+
+
+def test_context_prompt_is_grouped_as_plain_language_notes() -> None:
+    pack = ContextPack(
+        query="implement authentication",
+        project="demo",
+        items=[
+            ContextItem(
+                source="tree",
+                scope=Scope.PROJECT,
+                symbol="AuthService",
+                file="src/auth.py",
+                content="class AuthService defined at src/auth.py:10",
+                score=0.95,
+                reason="symbol_match",
+            ),
+            ContextItem(
+                source="memory",
+                scope=Scope.GLOBAL,
+                key="user:default:fact:typed_apis",
+                content="Prefer typed APIs.",
+                score=0.7,
+                reason="lexical_match",
+                metadata={"memory_type": "preference"},
+            ),
+        ],
+        estimated_tokens=42,
+    )
+
+    rendered = pack.as_prompt()
+
+    assert rendered.index("### Shared memory") < rendered.index("### Relevant code")
+    assert "Prefer typed APIs." in rendered
+    assert "AuthService" in rendered
+    assert "user:default:fact:typed_apis" not in rendered
+    assert "0.95" not in rendered
+    assert "symbol_match" not in rendered
+    assert "Request: implement authentication" in rendered
 
 
 def test_automatic_context_retrieval_uses_json_cli_without_logging_prompt(

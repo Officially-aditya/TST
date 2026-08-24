@@ -8,8 +8,9 @@ name: tst-context
 ---
 
 Use the TST MCP tool `tst_context` with the user's task. Present the returned
-items grouped by scope and retain the explanation/reason metadata. Do not
-invent memories or bypass TST's scope rules.
+items as plain-language notes grouped into Shared memory, Project memory,
+Current session, and Relevant code. Hide raw keys, scores, and ranking fields.
+Do not invent memories or bypass TST's scope rules.
 """,
     "tst-memory": """---
 name: tst-memory
