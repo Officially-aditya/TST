@@ -61,8 +61,26 @@ backend, desktop UI or automatic code-fix executor.
 
 ## Install and run
 
-Prerequisites are Python 3.10+ and a current stable Rust toolchain (the crate
-uses Rust edition 2024). On macOS or Linux, from a clean checkout:
+For a released installation, Python 3.10+ is the only prerequisite. The PyPI
+package contains the Python control plane and a platform-specific Rust kernel
+wheel, so users do not need a Rust toolchain:
+
+```bash
+python3 -m pipx install tst-memory
+# or: uv tool install tst-memory
+
+cd my-project
+tst doctor
+tst init --connect codex --connect opencode
+```
+
+`tst init` creates the project identity, indexes the repository, and installs
+only the selected project-local agent files. Use `tst connect claude`,
+`tst connect codex`, or `tst connect opencode` later to add an integration;
+`tst disconnect <provider>` removes TST-owned files while preserving user edits.
+
+For development or unsupported platforms, use a source checkout. The crate
+uses Rust edition 2024:
 
 ```bash
 python3 -m venv .venv
@@ -96,9 +114,9 @@ analysis extra is absent. Scanning is root-bounded, excludes dependencies,
 build output and common secrets, and never executes analyzed code.
 
 See [installation and commands](docs/installation.md) for the complete workflow.
-Wheel installations require a compatible `TST_KERNEL_BIN` unless their
-distributor explicitly bundles a platform binary; source checkouts can use
-`tst kernel build`.
+The release wheels target macOS arm64, macOS x86_64, Linux x86_64, Linux
+arm64, and Windows x86_64. A source checkout or an external compatible server
+can be used on other platforms with `TST_KERNEL_BIN`.
 
 ## Visible context layer
 
@@ -119,7 +137,14 @@ tst serve
 tst mcp serve
 tst connect claude
 tst connect codex
+tst connect opencode
 ```
+
+After an agent is connected, TST retrieves bounded project, memory, and code
+context automatically at the start of each new Codex or OpenCode user turn.
+This is retrieval, not automatic memory storage. Disable it with
+`TST_CONTEXT_MODE=explicit` or `TST_CONTEXT_AUTO=0`; explicit context commands
+and MCP calls continue to work.
 
 See [Control Plane](docs/control-plane.md) for scope rules, API paths, event
 redaction, and integration details.

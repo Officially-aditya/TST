@@ -8,6 +8,7 @@ __pycache__/
 .python-deps/
 *.egg-info/
 /build/
+tst/bin/
 
 # Rust
 target/

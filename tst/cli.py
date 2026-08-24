@@ -92,14 +92,21 @@ def _kernel_build() -> int:
     return 0
 
 
-def _service(project: str | None = None):
+def _service(project: str | None = None, *, actor: str = "TST"):
     from tst.service.service import TSTService
 
-    return TSTService(project)
+    return TSTService(project, actor=actor)
 
 
-def _context(path_value: str | None, query: str, *, budget: int, as_json: bool) -> int:
-    service = _service(path_value)
+def _context(
+    path_value: str | None,
+    query: str,
+    *,
+    budget: int,
+    actor: str = "TST",
+    as_json: bool,
+) -> int:
+    service = _service(path_value, actor=actor)
     try:
         pack = service.retrieve_context(query, budget=budget)
         document = pack.model_dump(mode="json")
@@ -129,9 +136,18 @@ def _init(path_value: str | None, *, as_json: bool, no_index: bool, integrations
                 installed[provider] = service.install_integration(provider)
             except Exception as exc:
                 installed[provider] = {"error": str(exc)}
+        integration_error = any(
+            isinstance(result, dict)
+            and (
+                "error" in result
+                or any(status in {"conflict", "invalid"} for status in result.values())
+            )
+            for result in installed.values()
+        )
         detected = {
             "claude": (service.project.root / ".claude").is_dir(),
             "codex": (service.project.root / ".agents").is_dir(),
+            "opencode": (service.project.root / ".opencode").is_dir(),
         }
         document = {
             "project": service.project.to_dict(),
@@ -152,7 +168,7 @@ def _init(path_value: str | None, *, as_json: bool, no_index: bool, integrations
                 print(f"\nIndex warning\n{index_error}")
             for provider, result in installed.items():
                 print(f"{provider}: {result}")
-        return 0 if index_error is None else 2
+        return 0 if index_error is None and not integration_error else 2
     finally:
         service.close()
 
@@ -213,7 +229,21 @@ def _connect(path_value: str | None, provider: str, *, force: bool, as_json: boo
         else:
             for target, status in document.items():
                 print(f"{status}: {target}")
-        return 0
+        return 2 if any(status in {"conflict", "invalid"} for status in document.values()) else 0
+    finally:
+        service.close()
+
+
+def _disconnect(path_value: str | None, provider: str, *, force: bool, as_json: bool) -> int:
+    service = _service(path_value)
+    try:
+        document = service.uninstall_integration(provider, force=force)
+        if as_json:
+            print(json.dumps(document, indent=2))
+        else:
+            for target, status in document.items():
+                print(f"{status}: {target}")
+        return 2 if any(status in {"modified", "invalid"} for status in document.values()) else 0
     finally:
         service.close()
 
@@ -331,12 +361,13 @@ def build_parser() -> argparse.ArgumentParser:
     context.add_argument("--query", dest="query_option")
     context.add_argument("--project", dest="path_value")
     context.add_argument("--budget", type=int, default=2_000)
+    context.add_argument("--actor", default="TST")
     context.add_argument("--json", action="store_true", dest="as_json")
 
     init = subcommands.add_parser("init", help="initialize and register a project")
     init.add_argument("path", nargs="?", default=None)
     init.add_argument("--no-index", action="store_true")
-    init.add_argument("--connect", action="append", choices=["claude", "codex"], default=[])
+    init.add_argument("--connect", action="append", choices=["claude", "codex", "opencode"], default=[])
     init.add_argument("--json", action="store_true", dest="as_json")
 
     status = subcommands.add_parser("status", help="show TST project and kernel status")
@@ -362,10 +393,16 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_serve.add_argument("--project", dest="path_value")
 
     connect = subcommands.add_parser("connect", help="install a coding-agent integration")
-    connect.add_argument("provider", choices=["claude", "codex"])
+    connect.add_argument("provider", choices=["claude", "codex", "opencode"])
     connect.add_argument("--project", dest="path_value")
     connect.add_argument("--force", action="store_true")
     connect.add_argument("--json", action="store_true", dest="as_json")
+
+    disconnect = subcommands.add_parser("disconnect", help="remove a coding-agent integration")
+    disconnect.add_argument("provider", choices=["claude", "codex", "opencode"])
+    disconnect.add_argument("--project", dest="path_value")
+    disconnect.add_argument("--force", action="store_true", help="remove modified generated files")
+    disconnect.add_argument("--json", action="store_true", dest="as_json")
 
     chat = subcommands.add_parser("chat", help="start the local model-backed chat REPL")
     chat.add_argument("--no-kernel", action="store_true")
@@ -387,7 +424,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         query = args.query_option or args.query
         if not query:
             parser.error("context requires a query")
-        return _context(args.path_value, query, budget=args.budget, as_json=args.as_json)
+        return _context(args.path_value, query, budget=args.budget, actor=args.actor, as_json=args.as_json)
     if args.command == "init":
         return _init(args.path, as_json=args.as_json, no_index=args.no_index, integrations=args.connect)
     if args.command == "status":
@@ -402,6 +439,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _mcp(args.path_value)
     if args.command == "connect":
         return _connect(args.path_value, args.provider, force=args.force, as_json=args.as_json)
+    if args.command == "disconnect":
+        return _disconnect(args.path_value, args.provider, force=args.force, as_json=args.as_json)
     if args.command == "chat":
         return _chat(args)
     parser.error("unsupported command")

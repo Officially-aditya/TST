@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from scripts.stage_kernel import platform_key, stage_kernel
 from tst import cli
 from tst.kernel.process import KernelProcessConfig, build_kernel
 
@@ -79,3 +80,22 @@ def test_kernel_build_is_locked_and_env_binary_has_precedence(tmp_path: Path, mo
     configured = tmp_path / "configured-server"
     monkeypatch.setenv("TST_KERNEL_BIN", str(configured))
     assert KernelProcessConfig(crate_dir=crate).resolved_binary() == configured.resolve()
+
+
+def test_kernel_process_uses_cwd_when_wheel_has_no_source_checkout(tmp_path: Path) -> None:
+    config = KernelProcessConfig(crate_dir=tmp_path / "missing-source")
+
+    assert config.resolved_working_directory() == Path.cwd().resolve()
+
+
+def test_stage_kernel_uses_normalized_platform_directory(tmp_path: Path) -> None:
+    binary = tmp_path / "server"
+    binary.write_text("binary", encoding="utf-8")
+    binary.chmod(0o700)
+
+    target = stage_kernel(binary, tmp_path / "package", system="Linux", machine="aarch64")
+
+    assert platform_key("Linux", "aarch64") == "linux-arm64"
+    assert target == tmp_path / "package" / "bin" / "linux-arm64" / "server"
+    assert target.read_text(encoding="utf-8") == "binary"
+    assert target.stat().st_mode & 0o111

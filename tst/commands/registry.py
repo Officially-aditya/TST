@@ -89,8 +89,14 @@ def default_registry(service: TSTService) -> CommandRegistry:
 
     def connect(command: ParsedCommand) -> CommandResult:
         if not command.args:
-            raise ValueError("usage: /connect claude|codex")
+            raise ValueError("usage: /connect claude|codex|opencode")
         data = service.install_integration(command.args[0])
+        return result(data)
+
+    def disconnect(command: ParsedCommand) -> CommandResult:
+        if not command.args:
+            raise ValueError("usage: /disconnect claude|codex|opencode")
+        data = service.uninstall_integration(command.args[0])
         return result(data)
 
     def init(_: ParsedCommand) -> CommandResult:
@@ -107,6 +113,7 @@ def default_registry(service: TSTService) -> CommandRegistry:
             CommandSpec("forget", "Forget one canonical memory key", forget),
             CommandSpec("doctor", "Diagnose the local installation", doctor),
             CommandSpec("connect", "Install an agent integration", connect),
+            CommandSpec("disconnect", "Remove an agent integration", disconnect),
             CommandSpec("init", "Show project initialization state", init),
         ]
     )

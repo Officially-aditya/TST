@@ -18,14 +18,17 @@ def project_root() -> Path:
 
 def default_kernel_binary(crate_dir: Path | None = None) -> Path:
     suffix = ".exe" if platform.system() == "Windows" else ""
-    if crate_dir is None:
-        system = platform.system().lower()
-        machine = platform.machine().lower().replace("amd64", "x86_64").replace("aarch64", "arm64")
-        bundled = (
-            Path(__file__).resolve().parents[1] / "bin" / f"{system}-{machine}" / f"server{suffix}"
-        )
-        if bundled.is_file():
-            return bundled
+    system = platform.system().lower()
+    machine = (
+        platform.machine()
+        .lower()
+        .replace("amd64", "x86_64")
+        .replace("x64", "x86_64")
+        .replace("aarch64", "arm64")
+    )
+    bundled = Path(__file__).resolve().parents[1] / "bin" / f"{system}-{machine}" / f"server{suffix}"
+    if (crate_dir is None or not (crate_dir / "Cargo.toml").is_file()) and bundled.is_file():
+        return bundled
     crate = crate_dir or project_root() / "tst_memory"
     return crate / "target" / "release" / f"server{suffix}"
 
@@ -49,6 +52,7 @@ class KernelProcessConfig:
     stderr_history: int = 200
     max_response_bytes: int = 8 * 1024 * 1024
     env: Mapping[str, str] | None = None
+    working_directory: Path | None = None
 
     def __post_init__(self) -> None:
         if min(self.startup_timeout, self.request_timeout, self.shutdown_timeout) <= 0:
@@ -69,6 +73,15 @@ class KernelProcessConfig:
         if self.command:
             return [str(part) for part in self.command]
         return [str(self.resolved_binary())]
+
+    def resolved_working_directory(self) -> Path:
+        """Return a valid child-process directory for source and wheel installs."""
+
+        if self.working_directory is not None:
+            return self.working_directory.expanduser().resolve()
+        if self.crate_dir.is_dir():
+            return self.crate_dir.resolve()
+        return Path.cwd().resolve()
 
 
 def build_kernel(config: KernelProcessConfig) -> Path:

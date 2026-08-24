@@ -43,11 +43,16 @@ All clients call `TSTService`, never the kernel client directly:
 
 ```bash
 tst init
+tst init --connect codex --connect opencode
 tst context --query "implement authentication middleware" --json
 tst status --json
 tst serve
 tst ui
 ```
+
+Context retrieval is transient: a `ContextPack` is assembled for a query and is
+not stored as memory. `tst init` and reindexing update the repository index; they
+do not guess a task or write task text into memory.
 
 The API binds to loopback by default:
 
@@ -81,17 +86,31 @@ tst mcp serve
 ```
 
 The stdio adapter exposes `tst_status`, `tst_context`, memory CRUD tools, and
-bounded tree tools. Claude and Codex project skills are generated explicitly:
+bounded tree tools. Project integrations are generated explicitly:
 
 ```bash
 tst connect claude
 tst connect codex
+tst connect opencode
+tst disconnect codex
 ```
 
 Claude files live under `.claude/skills`; Codex files live under
-`.agents/skills`. Existing files are not overwritten unless `--force` is
-provided. The generated skills instruct each agent to call the same MCP
-surface instead of implementing memory behavior independently.
+`.agents/skills`; OpenCode files live under `.opencode/commands` and
+`.opencode/plugins`. Existing files are not overwritten unless `--force` is
+provided. All integrations use the same MCP and `TSTService` surface instead
+of implementing memory behavior independently.
+
+Connecting Codex installs a project-local `UserPromptSubmit` hook. Connecting
+OpenCode installs a project-local `chat.message` plugin. Both hooks call
+`tst context --json` before a new agent turn and inject only bounded context
+items into that turn. They never store the prompt as memory.
+
+Automatic retrieval is enabled after connection. Set
+`TST_CONTEXT_MODE=explicit` or `TST_CONTEXT_AUTO=0` in the agent environment to
+disable it; explicit `/tst-context` commands and direct MCP calls remain
+available. Codex requires reviewing and trusting the generated project hook in
+`/hooks` before it will run.
 
 ## UI
 

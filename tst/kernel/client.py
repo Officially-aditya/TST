@@ -96,7 +96,7 @@ class StdioKernelClient:
             try:
                 self._process = subprocess.Popen(
                     command,
-                    cwd=self.config.crate_dir,
+                    cwd=self.config.resolved_working_directory(),
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,

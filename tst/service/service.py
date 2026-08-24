@@ -434,6 +434,7 @@ class TSTService:
         root = self.project.root
         claude = root / ".claude" / "skills" / "tst-context" / "SKILL.md"
         codex = root / ".agents" / "skills" / "tst-context" / "SKILL.md"
+        opencode = root / ".opencode" / "plugins" / "tst_context.js"
         return [
             IntegrationStatus(
                 name="Claude Code",
@@ -445,6 +446,11 @@ class TSTService:
                 status="connected" if codex.is_file() else "available",
                 location=str(codex.parent.parent) if codex.is_file() else str(root / ".agents"),
             ),
+            IntegrationStatus(
+                name="OpenCode",
+                status="connected" if opencode.is_file() else "available",
+                location=str(opencode.parent.parent) if opencode.is_file() else str(root / ".opencode"),
+            ),
             IntegrationStatus(name="MCP", status="available", details={"command": "tst mcp serve"}),
             IntegrationStatus(name="Python SDK", status="available"),
         ]
@@ -455,6 +461,8 @@ class TSTService:
             from tst.integrations.claude import install
         elif selected == "codex":
             from tst.integrations.codex import install
+        elif selected == "opencode":
+            from tst.integrations.opencode import install
         else:
             raise IntegrationError(f"unsupported integration: {provider}")
         result = install(self.project.root, force=force)
@@ -463,6 +471,25 @@ class TSTService:
             uuid4().hex,
             time.perf_counter(),
             metadata={"written": len(result)},
+        )
+        return result
+
+    def uninstall_integration(self, provider: str, *, force: bool = False) -> dict[str, Any]:
+        selected = provider.strip().lower()
+        if selected == "claude":
+            from tst.integrations.claude import uninstall
+        elif selected == "codex":
+            from tst.integrations.codex import uninstall
+        elif selected == "opencode":
+            from tst.integrations.opencode import uninstall
+        else:
+            raise IntegrationError(f"unsupported integration: {provider}")
+        result = uninstall(self.project.root, force=force)
+        self._publish(
+            f"integration.disconnect.{selected}",
+            uuid4().hex,
+            time.perf_counter(),
+            metadata={"removed": sum(status == "removed" for status in result.values())},
         )
         return result
 
