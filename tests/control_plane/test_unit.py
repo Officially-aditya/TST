@@ -7,7 +7,9 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from tst.analysis.graph_builder import GraphNode
 from tst.commands import CommandRegistry, CommandSpec, parse_command, suggest_commands
+from tst.context.broker import _is_external_node, _kernel_node_type
 from tst.context.models import ContextItem, ContextPack
 from tst.integrations.auto_context import render_context_document, retrieve_context
 from tst.integrations.claude import install as install_claude
@@ -149,6 +151,21 @@ def test_context_prompt_is_grouped_as_plain_language_notes() -> None:
     assert "0.95" not in rendered
     assert "symbol_match" not in rendered
     assert "Request: implement authentication" in rendered
+
+
+def test_context_tree_maps_parser_only_node_types_to_kernel_types() -> None:
+    assert _kernel_node_type("method") == "function"
+    assert _kernel_node_type("variable") == "symbol"
+    assert _kernel_node_type("external_symbol") == "external"
+    assert _kernel_node_type("external_module") == "external"
+
+
+def test_context_tree_hides_external_implementation_nodes() -> None:
+    external = GraphNode(1, "external_symbol", "Thing", "Thing", metadata={"external": True})
+    local = GraphNode(2, "class", "Thing", "pkg.Thing")
+
+    assert _is_external_node(external)
+    assert not _is_external_node(local)
 
 
 def test_automatic_context_retrieval_uses_json_cli_without_logging_prompt(

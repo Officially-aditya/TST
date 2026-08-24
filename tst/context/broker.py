@@ -174,7 +174,7 @@ class ContextBroker:
                     break
         items: list[ContextItem] = []
         for node, score, reason in found.values():
-            if node.node_type == "project":
+            if node.node_type == "project" or _is_external_node(node):
                 continue
             items.append(self._node_item(node, project, score, reason))
 
@@ -182,7 +182,11 @@ class ContextBroker:
             # turning a context request into a full graph dump.
             related = graph.query(node.node_id, depth=1, max_nodes=8, token_budget=500)
             for related_node in related.nodes[1:]:
-                if related_node.node_id == node.node_id or related_node.node_type == "project":
+                if (
+                    related_node.node_id == node.node_id
+                    or related_node.node_type == "project"
+                    or _is_external_node(related_node)
+                ):
                     continue
                 if any(item.symbol == related_node.qualified_name for item in items):
                     continue
@@ -197,7 +201,7 @@ class ContextBroker:
         if not items:
             try:
                 for node in client.tree_find(query, limit=10):
-                    if isinstance(node, dict):
+                    if isinstance(node, dict) and not _is_external_wire_node(node):
                         items.append(self._wire_node_item(node))
             except Exception:
                 # Graph retrieval remains useful when a kernel has no tree yet.
@@ -323,4 +327,14 @@ def _kernel_node_type(value: str) -> str:
     return {
         "method": "function",
         "variable": "symbol",
+        "external_symbol": "external",
+        "external_module": "external",
     }.get(value.casefold(), value)
+
+
+def _is_external_node(node: GraphNode) -> bool:
+    return bool(node.metadata.get("external")) or node.node_type.casefold().startswith("external_")
+
+
+def _is_external_wire_node(node: dict[str, Any]) -> bool:
+    return str(node.get("node_type", "")).casefold().startswith("external")
